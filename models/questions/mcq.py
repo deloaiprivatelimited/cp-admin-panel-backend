@@ -1,77 +1,95 @@
-# models/questions/mcq.py
+# models/mcq.py
+
+import uuid
 from mongoengine import (
-    Document, EmbeddedDocument, StringField, ListField,
-    BooleanField, IntField, EmbeddedDocumentField, ReferenceField,
-    FloatField
+    Document, EmbeddedDocument,
+    StringField, ListField, EmbeddedDocumentField,
+    IntField, BooleanField, FloatField, BooleanField, DictField
 )
-from mongoengine.queryset import QuerySet
-import datetime
 
 
 class Option(EmbeddedDocument):
-    id = StringField(required=True)   # unique id for option (e.g., "A", "B", "C", or UUID)
+    """Options for MCQ"""
+    option_id = StringField(required=True, default=lambda: str(uuid.uuid4()))
     value = StringField(required=True)
 
-from mongoengine import Document, StringField, SetField
 
 class MCQConfig(Document):
-    topics = SetField(StringField(), default=set)
-    subtopics = SetField(StringField(), default=set)
-    tags = SetField(StringField(), default=set)
-    difficulties = SetField(StringField(), default=set)
+    """Stores Config data auto-created from MCQ"""
+    difficulty_levels = ListField(StringField())
+    topics = ListField(StringField())
+    subtopics = ListField(StringField())
+    tags = ListField(StringField())
 
-    meta = {"collection": "mcq_config"}
+    meta = {"collection": "mcq_configs"}
 
-    def update_from_mcq(self, mcq):
-        updated = False
 
-        if mcq.topic:
-            if mcq.topic not in self.topics:
-                self.topics.add(mcq.topic)
-                updated = True
-
-        if mcq.subtopic:
-            if mcq.subtopic not in self.subtopics:
-                self.subtopics.add(mcq.subtopic)
-                updated = True
-
-        for tag in mcq.tags:
-            if tag not in self.tags:
-                self.tags.add(tag)
-                updated = True
-
-        if mcq.difficulty_level:
-            if mcq.difficulty_level not in self.difficulties:
-                self.difficulties.add(mcq.difficulty_level)
-                updated = True
-
-        if updated:
-            self.save()
-
-class QuestionMCQ(Document):
+class MCQ(Document):
+    """Main MCQ Model"""
     title = StringField(required=True)
     question_text = StringField(required=True)
+
     options = ListField(EmbeddedDocumentField(Option), required=True)
-    correct_options = ListField(StringField(), required=True)  # stores option ids
+    correct_options = ListField(StringField(), required=True)  # list of option_ids
+
     is_multiple = BooleanField(default=False)
-    marks = FloatField(default=1.0)
-    negative_marks = FloatField(default=0.0)
-    difficulty_level = StringField(choices=["easy", "medium", "hard"], default="medium")
+
+    marks = FloatField(required=True, min_value=0)
+    negative_marks = FloatField(required=True, min_value=0)
+
+    difficulty_level = StringField(choices=["Easy", "Medium", "Hard"], required=True)
+
     explanation = StringField()
-    tags = ListField(StringField(), default=list)
-    time_limit = IntField(default=60)  # seconds
-    topic = StringField()
+    tags = ListField(StringField())
+    time_limit = IntField()  # in seconds
+
+    topic = StringField(required=True)
     subtopic = StringField()
-    created_at = StringField(default=lambda: datetime.datetime.utcnow().isoformat())
+    created_by = DictField(required=True,default=lambda: {"id": "system", "name": "System"})
 
-    meta = {"collection": "questions_mcq"}
 
+    meta = {"collection": "mcqs"}
+
+    def clean(self):
+        """Validation before saving"""
+        if not self.is_multiple and len(self.correct_options) > 1:
+            raise ValueError("Multiple correct options not allowed unless is_multiple=True")
+
+    def save(self, *args, **kwargs):
+        """Override save to auto-update/create MCQConfig"""
+        self.clean()  # run validation
+
+        # Save MCQ first
+        result = super(MCQ, self).save(*args, **kwargs)
+
+        # Update MCQConfig
+        config = MCQConfig.objects.first()
+        if not config:
+            config = MCQConfig()
+
+        if self.difficulty_level not in config.difficulty_levels:
+            config.difficulty_levels.append(self.difficulty_level)
+
+        if self.topic and self.topic not in config.topics:
+            config.topics.append(self.topic)
+
+        if self.subtopic and self.subtopic not in config.subtopics:
+            config.subtopics.append(self.subtopic)
+
+        for tag in self.tags or []:
+            if tag not in config.tags:
+                config.tags.append(tag)
+
+        config.save()
+
+        return result
     def to_json(self):
+        """Convert MCQ document to dict/JSON"""
         return {
             "id": str(self.id),
             "title": self.title,
             "question_text": self.question_text,
-            "options": [{"id": o.id, "value": o.value} for o in self.options],
+            "options": [{"option_id": o.option_id, "value": o.value} for o in self.options],
             "correct_options": self.correct_options,
             "is_multiple": self.is_multiple,
             "marks": self.marks,
@@ -82,14 +100,5 @@ class QuestionMCQ(Document):
             "time_limit": self.time_limit,
             "topic": self.topic,
             "subtopic": self.subtopic,
-            "created_at": self.created_at,
+            "created_by": self.created_by,
         }
-
-    def save(self, *args, **kwargs):
-        """Override save to auto-update MCQConfig"""
-        result = super().save(*args, **kwargs)
-        config = MCQConfig.objects.first()
-        if not config:
-            config = MCQConfig()
-        config.update_from_mcq(self)
-        return result

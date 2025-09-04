@@ -1,0 +1,11 @@
+{"permissions": {
+                "admins": true,
+                "colleges": true,
+                "courses": true,
+                "questions": {
+                    "coding": true,
+                    "mcq": true,
+                    "rearrange": true
+                }
+            }
+        }
