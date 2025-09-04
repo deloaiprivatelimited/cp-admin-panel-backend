@@ -733,3 +733,97 @@ def reorder_units_in_lesson(course_id, chapter_id, lesson_id):
         return response(False, f"Validation error: {ve}"), 400
     except Exception as e:
         return response(False, f"An error occurred: {str(e)}"), 500
+
+@course_bp.route("/<course_id>/chapters/<chapter_id>/lessons/<lesson_id>/units/<unit_id>", methods=["PUT"])
+@token_required
+def update_unit_name_only(course_id, chapter_id, lesson_id, unit_id):
+    """
+    Update ONLY the unit's 'name'. Nothing else is modified.
+    Body: { "name": "New Unit Name" }
+    """
+    try:
+        # Validate IDs
+        for _id, label in [(course_id, "course"), (chapter_id, "chapter"), (lesson_id, "lesson"), (unit_id, "unit")]:
+            if not ObjectId.is_valid(_id):
+                return response(False, f"Invalid {label} ID"), 400
+
+        # Fetch docs
+        course = Course.objects.get(id=course_id)
+        chapter = Chapter.objects.get(id=chapter_id)
+        lesson = Lesson.objects.get(id=lesson_id)
+        unit = Unit.objects.get(id=unit_id)
+
+        # Relationship checks (compare by id to avoid object identity issues)
+        if not any(str(c.id) == str(chapter.id) for c in course.chapters):
+            return response(False, "Chapter does not belong to this course"), 404
+        if not any(str(l.id) == str(lesson.id) for l in chapter.lessons):
+            return response(False, "Lesson does not belong to this chapter"), 404
+        if not any(str(u.id) == str(unit.id) for u in lesson.units):
+            return response(False, "Unit does not belong to this lesson"), 404
+
+        data = request.get_json() or {}
+        name = (data.get("name") or "").strip()
+        if not name:
+            return response(False, "'name' is required and cannot be empty"), 400
+
+        # Update only the name
+        unit.name = name
+        unit.save()
+
+        return response(True, "Unit name updated successfully", {
+            "course_id": str(course.id),
+            "chapter_id": str(chapter.id),
+            "lesson_id": str(lesson.id),
+            "unit": unit.to_json()
+        }), 200
+
+    except DoesNotExist:
+        return response(False, "Course, Chapter, Lesson, or Unit not found"), 404
+    except ValidationError as ve:
+        return response(False, f"Validation error: {ve}"), 400
+    except Exception as e:
+        return response(False, f"An error occurred: {str(e)}"), 500
+
+@course_bp.route("/<course_id>/chapters/<chapter_id>/lessons/<lesson_id>/units/<unit_id>", methods=["DELETE"])
+@token_required
+def delete_unit_from_lesson(course_id, chapter_id, lesson_id, unit_id):
+    """
+    Delete a unit and remove its reference from the lesson's units list.
+    """
+    try:
+        # Validate IDs
+        for _id, label in [(course_id, "course"), (chapter_id, "chapter"), (lesson_id, "lesson"), (unit_id, "unit")]:
+            if not ObjectId.is_valid(_id):
+                return response(False, f"Invalid {label} ID"), 400
+
+        # Fetch docs
+        course = Course.objects.get(id=course_id)
+        chapter = Chapter.objects.get(id=chapter_id)
+        lesson = Lesson.objects.get(id=lesson_id)
+        unit = Unit.objects.get(id=unit_id)
+
+        # Relationship checks
+        if not any(str(c.id) == str(chapter.id) for c in course.chapters):
+            return response(False, "Chapter does not belong to this course"), 404
+        if not any(str(l.id) == str(lesson.id) for l in chapter.lessons):
+            return response(False, "Lesson does not belong to this chapter"), 404
+        if not any(str(u.id) == str(unit.id) for u in lesson.units):
+            return response(False, "Unit does not belong to this lesson"), 404
+
+        # Remove reference from lesson, then delete the unit document
+        lesson.update(pull__units=unit)
+        unit.delete()
+
+        return response(True, "Unit deleted successfully", {
+            "course_id": str(course.id),
+            "chapter_id": str(chapter.id),
+            "lesson_id": str(lesson.id),
+            "unit_id": str(unit_id)
+        }), 200
+
+    except DoesNotExist:
+        return response(False, "Course, Chapter, Lesson, or Unit not found"), 404
+    except ValidationError as ve:
+        return response(False, f"Validation error: {ve}"), 400
+    except Exception as e:
+        return response(False, f"An error occurred: {str(e)}"), 500
