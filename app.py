@@ -9,6 +9,7 @@ from routes.admin.login import login_bp
 from routes.admin.admins import admin_bp
 from routes.college.college import college_bp
 from routes.questions.mcq import mcq_bp
+from routes.course.course import course_bp
 
 # Load environment variables
 load_dotenv()
@@ -28,6 +29,7 @@ def create_app():
     app.register_blueprint(admin_bp, url_prefix="/admin")
     app.register_blueprint(college_bp, url_prefix="/colleges")
     app.register_blueprint(mcq_bp, url_prefix="/mcqs")
+    app.register_blueprint(course_bp,url_prefix='/courses')
 
     @app.route("/")
     def home():
