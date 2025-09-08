@@ -433,7 +433,7 @@ def update_admin_password(college_id, admin_id):
             return response(False, "Admin not found"), 404
 
         admin.password = generate_password_hash(new_password)
-        admin.is_first_login = False
+        admin.is_first_login = True
         admin.save()
         college.save()
 
