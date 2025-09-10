@@ -427,7 +427,7 @@ def update_admin_password(college_id, admin_id):
         college = College.objects(id=college_id).first()
         if not college:
             return response(False, "College not found"), 404
-
+        print(new_password)
         admin = next((a for a in college.admins if str(a.id) == admin_id), None)
         if not admin:
             return response(False, "Admin not found"), 404
