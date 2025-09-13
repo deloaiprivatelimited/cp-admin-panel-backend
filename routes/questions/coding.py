@@ -612,6 +612,13 @@ def upsert_testcase_group(question_id):
 
             group.updated_at = datetime.utcnow()
             group.save()
+            try:
+                q = Question.objects.get(id=group.question_id)
+                if group not in q.testcase_groups:
+                    q.testcase_groups.append(group)
+                    q.save()
+            except DoesNotExist:
+                pass
 
             return response(True, "Test case group updated", {"id": str(group.id)}), 200
 
@@ -632,9 +639,23 @@ def upsert_testcase_group(question_id):
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow()
             )
+          # after group.save() in CREATE branch
             group.save()
 
+            # attach to question.document to keep the denormalized reference list in sync
+            try:
+                q = Question.objects.get(id=question_id)
+                # avoid duplicates
+                if group not in q.testcase_groups:
+                    q.testcase_groups.append(group)
+                    q.save()
+            except DoesNotExist:
+                # question already validated earlier, but handle defensively
+                pass
+
             return response(True, "Test case group created", {"id": str(group.id)}), 201
+
+
 
     except ValidationError as ve:
         return response(False, f"Validation error: {ve}"), 400

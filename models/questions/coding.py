@@ -67,7 +67,7 @@ class TestCaseGroup(Document):
         self.updated_at = datetime.utcnow()
         return super().save(*args, **kwargs)
 
-class Question(Document):
+class BaseQuestion(Document):
     title = StringField(required=True)
     topic = StringField()
     subtopic = StringField()                 # <-- new persisted field
@@ -110,13 +110,70 @@ class Question(Document):
 
     created_at = DateTimeField(default=datetime.utcnow)
     updated_at = DateTimeField(default=datetime.utcnow)
+    meta = {"abstract": True}
 
-    meta = {
+
+    def save(self, *args, **kwargs):
+        self.updated_at = datetime.utcnow()
+        return super().save(*args, **kwargs)
+
+
+class Question(BaseQuestion):
+     meta = {
         "collection": "questions",
         "indexes": [
             ("published", "topic"),
             {"fields": ["tags"], "sparse": True},
             {"fields": ["allowed_languages"], "sparse": True},  # optional: query by language
+        ]
+    }
+
+class CourseQuestion(BaseQuestion):
+     meta = {
+        "collection": "course_questions",
+        "indexes": [
+            ("published", "topic"),
+            {"fields": ["tags"], "sparse": True},
+            {"fields": ["allowed_languages"], "sparse": True},  # optional: query by language
+        ]
+    }
+
+# Add imports near top of models.py
+from mongoengine import EmbeddedDocumentField
+
+# New embedded doc for per-case results
+class SubmissionCaseResult(EmbeddedDocument):
+    testcase_id = StringField(required=False)  # internal id reference (NOT exposed in API responses)
+    judge_token = StringField()                # token returned by Judge0 for this run
+    status = DictField()                       # minimal status object returned by Judge0 (id + description)
+    stdout = StringField()                     # may be large, but useful for debugging; consider truncation
+    stderr = StringField()
+    compile_output = StringField()
+    time = FloatField()                        # runtime seconds/milliseconds depending on Judge0 response
+    memory = IntField()
+    points_awarded = IntField(default=0)       # points for this testcase (after applying group weight/rule)
+    created_at = DateTimeField(default=datetime.utcnow)
+
+# Submission document
+class Submission(Document):
+    question_id = StringField(required=True)
+    collection = StringField(choices=("questions", "course_questions"), default="questions")
+    user_id = StringField(required=True)  # store only the user id from JWT
+    language = StringField(required=True)
+    source_code = StringField(required=True)
+    total_score = IntField(default=0)
+    max_score = IntField(default=0)
+    verdict = StringField(default="Pending")  # "Accepted", "Wrong Answer", "Runtime Error", etc.
+    case_results = ListField(EmbeddedDocumentField(SubmissionCaseResult), default=list)
+    attempt_number = IntField(default=1)      # for tracking attempts (optional)
+    created_at = DateTimeField(default=datetime.utcnow)
+    updated_at = DateTimeField(default=datetime.utcnow)
+
+    meta = {
+        "collection": "submissions",
+        "indexes": [
+            ("question_id", "created_at"),
+            "user_id",
         ]
     }
 

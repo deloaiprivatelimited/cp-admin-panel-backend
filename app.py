@@ -15,6 +15,7 @@ from routes.questions.rearrange import rearrange_bp
 from routes.course.mcq import course_mcq_bp
 from routes.course.rearrange import course_rearrange_bp
 from routes.course.coding import course_coding_q_bp
+from routes.coding.coding_question import bp as coding_bp
 # Load environment variables
 load_dotenv()
 
@@ -39,7 +40,7 @@ def create_app():
     app.register_blueprint(course_mcq_bp, url_prefix="/course-mcqs")
     app.register_blueprint(course_rearrange_bp, url_prefix="/course-rearranges")
     app.register_blueprint(course_coding_q_bp, url_prefix="/course-coding-questions")
-
+    app.register_blueprint(coding_bp,url_prefix="/coding/questions")
     @app.route("/")
     def home():
         return {"message": "CP Admin API is running 🚀"}
