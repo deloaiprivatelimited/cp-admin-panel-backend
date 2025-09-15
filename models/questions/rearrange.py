@@ -189,3 +189,16 @@ class Rearrange(BaseRearrange):
 class CourseRearrange(BaseRearrange):
     """Model for a 'rearrange these items in correct order' question"""
     meta = {"collection": "course_rearrange"}
+
+
+ 
+     
+class CollegeRearrange(BaseRearrange):
+    college_id = StringField(required=True)  # ✅ mandatory field for college linkage
+
+    """Model for a 'rearrange these items in correct order' question"""
+    meta = {"collection": "college_rearrange"}
+
+class TestRearrange(BaseRearrange):
+    """Model for a 'rearrange these items in correct order' question"""
+    meta = {"collection": "course_rearrange"}

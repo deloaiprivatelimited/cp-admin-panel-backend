@@ -8,3 +8,7 @@ flask-cors
 gunicorn
 requests
 bcrypt  
+celery[redis]
+redis
+pytz
+python-magic

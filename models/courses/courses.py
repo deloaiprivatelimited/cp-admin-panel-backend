@@ -5,9 +5,9 @@ from mongoengine import (
     EmbeddedDocumentField, ValidationError
 )
 
-from models.courses.mcq import CourseMCQ
-from models.courses.rearrange import CourseRearrange
-from models.courses.coding import CourseQuestion
+from models.questions.mcq import CourseMCQ
+from models.questions.rearrange import CourseRearrange
+from models.questions.coding import CourseQuestion
 # ---------------------------
 # Payload models for Unit (Embedded)
 # ---------------------------

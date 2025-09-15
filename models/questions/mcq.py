@@ -187,3 +187,16 @@ class MCQ(BaseMCQ):
 
 class CourseMCQ(BaseMCQ):
     meta = {"collection": "course_mcqs"}
+
+
+
+class TestMCQ(BaseMCQ):
+    meta = {"collection": "test_mcqs"}
+
+
+
+class CollegeMCQ(BaseMCQ):
+    college_id = StringField(required=True)  # ✅ mandatory field for college linkage
+
+    meta = {"collection": "college_mcqs"}
+

@@ -1,15 +1,13 @@
-# routes/mcq_routes.py
-
 from flask import Blueprint, request
 from functools import wraps
 from mongoengine.errors import ValidationError, NotUniqueError, DoesNotExist
 from mongoengine.queryset.visitor import Q
 
-from models.questions.mcq import MCQ, Option, Image
+from models.questions.mcq import CollegeMCQ as MCQ, Option, Image 
 from utils.jwt import verify_access_token
 from utils.response import response
 
-mcq_bp = Blueprint("mcq_bp", __name__)
+mcq_bp = Blueprint("college_mcq_bp", __name__)
 
 # ---------------------------
 # Decorator to check token
@@ -34,6 +32,25 @@ def token_required(f):
 
     return decorated
 
+# ---------------------------
+# Helper: college permission check
+# ---------------------------
+def _get_admin_college_id():
+    admin_payload = getattr(request, "admin", {}) or {}
+    return admin_payload.get("college_id")
+
+def _ensure_same_college_or_forbid(obj_college_id):
+    """
+    If admin has no college_id or it does not match obj_college_id,
+    return a response tuple (body, status). Otherwise return None.
+    """
+    admin_college_id = _get_admin_college_id()
+    if admin_college_id is None:
+        return response(False, "Forbidden: admin has no college_id"), 403
+    # Compare as strings to be tolerant of types
+    if str(admin_college_id) != str(obj_college_id):
+        return response(False, "Forbidden: resource does not belong to your college"), 403
+    return None
 
 # ---------------------------
 # Helpers: normalize images & options
@@ -65,7 +82,6 @@ def _normalize_image(obj):
     # remove None values (mongoengine will fill defaults)
     return Image(**{k: v for k, v in img_kwargs.items() if v is not None})
 
-
 def _normalize_option(opt):
     """
     Accepts:
@@ -90,7 +106,6 @@ def _normalize_option(opt):
         if normalized:
             images.append(normalized)
     return Option(option_id=oid, value=val, images=images)
-
 
 # ---------------------------
 # Create new MCQ
@@ -160,6 +175,10 @@ def add_mcq():
         if not is_multiple and len(correct_ids) > 1:
             return response(False, "Multiple correct not allowed when is_multiple is false"), 400
 
+        admin_payload = getattr(request, "admin", {}) or {}
+        # persist college_id on MCQ
+        college_id = admin_payload.get("college_id")
+
         mcq = MCQ(
             title=data.get("title"),
             question_text=data.get("question_text"),
@@ -176,7 +195,8 @@ def add_mcq():
             time_limit=int(data.get("time_limit")) if data.get("time_limit") is not None else None,
             topic=data.get("topic"),
             subtopic=data.get("subtopic"),
-            created_by=request.admin if hasattr(request, "admin") else {"id": "system", "name": "System"}
+            created_by=admin_payload if admin_payload else {"id": "system", "name": "System"},
+            college_id=college_id
         )
         mcq.save()
 
@@ -186,11 +206,10 @@ def add_mcq():
     except Exception as e:
         return response(False, f"Error: {str(e)}"), 500
 
-
 # ---------------------------
 # Get All MCQs (with filters + pagination)
 # - By default returns ALL MCQs irrespective of created_by
-# - If ?mine=true passed, restrict to current admin's email (if available)
+# - If ?mine=true passed, restrict to current admin's college (if available)
 # ---------------------------
 @mcq_bp.route("/", methods=["GET"])
 @token_required
@@ -208,7 +227,21 @@ def get_mcqs():
         mine = request.args.get("mine", "false").lower() == "true"
         query = MCQ.objects
 
-        
+        # If mine=true, restrict by admin's college_id (if absent, this will behave as forbid in single endpoints,
+        # but for listing we just return empty set if admin has no college_id)
+        if mine:
+            admin_college_id = _get_admin_college_id()
+            if admin_college_id is None:
+                # return empty set instead of raising: keep list behavior non-intrusive
+                total = 0
+                return response(True, "MCQs fetched successfully", {
+                    "mcqs": [],
+                    "page": page,
+                    "per_page": per_page,
+                    "total": total,
+                    "total_pages": 0
+                }), 200
+            query = query.filter(college_id=str(admin_college_id))
 
         # Apply filters
         if topic:
@@ -235,18 +268,21 @@ def get_mcqs():
     except Exception as e:
         return response(False, f"Error: {str(e)}"), 500
 
-
 # ---------------------------
 # Get single MCQ by ID (for editing)
-# - By default fetches irrespective of created_by (authorized via token only)
-# - Use ?mine=true to require created_by match
+# - Enforce admin college ownership
 # ---------------------------
 @mcq_bp.route('/<string:mcq_id>', methods=['GET'])
 @token_required
 def get_mcq(mcq_id):
     try:
-       
         mcq = MCQ.objects.get(id=mcq_id)
+
+        # Ownership check: ensure same college
+        forbid = _ensure_same_college_or_forbid(getattr(mcq, "college_id", None))
+        if forbid:
+            return forbid
+
         return response(True, 'MCQ fetched', mcq.to_json()), 200
     except DoesNotExist:
         return response(False, 'MCQ not found or not authorized'), 404
@@ -255,18 +291,20 @@ def get_mcq(mcq_id):
     except Exception as e:
         return response(False, f'Error: {str(e)}'), 500
 
-
 # ---------------------------
 # Update MCQ by ID (full replace)
-# - By default updates irrespective of created_by
-# - Use ?mine=true to enforce created_by match
+# - Enforce admin college ownership
 # ---------------------------
 @mcq_bp.route('/<string:mcq_id>', methods=['PUT'])
 @token_required
 def update_mcq(mcq_id):
     try:
-      
         mcq = MCQ.objects.get(id=mcq_id)
+
+        # Ownership check: ensure same college
+        forbid = _ensure_same_college_or_forbid(getattr(mcq, "college_id", None))
+        if forbid:
+            return forbid
 
         data = request.get_json() or {}
 
@@ -340,6 +378,9 @@ def update_mcq(mcq_id):
         mcq.topic = data.get('topic', mcq.topic)
         mcq.subtopic = data.get('subtopic', mcq.subtopic)
 
+        # preserve college_id (do not overwrite unless you intentionally want to — keep logic unchanged)
+        # mcq.college_id stays as-is
+
         mcq.save()
         return response(True, 'MCQ updated successfully', mcq.to_json()), 200
 
@@ -350,16 +391,20 @@ def update_mcq(mcq_id):
     except Exception as e:
         return response(False, f'Error: {str(e)}'), 500
 
-
 # ---------------------------
 # Optional: Partial update (PATCH)
-# - Allows partial updates; options block is handled similarly as PUT
+# - Enforce admin college ownership
 # ---------------------------
 @mcq_bp.route('/<string:mcq_id>', methods=['PATCH'])
 @token_required
 def patch_mcq(mcq_id):
     try:
         mcq = MCQ.objects.get(id=mcq_id)
+
+        # Ownership check: ensure same college
+        forbid = _ensure_same_college_or_forbid(getattr(mcq, "college_id", None))
+        if forbid:
+            return forbid
 
         data = request.get_json() or {}
 
@@ -436,6 +481,8 @@ def patch_mcq(mcq_id):
         if 'tags' in data: mcq.tags = data.get('tags') or []
         if 'time_limit' in data: mcq.time_limit = int(data['time_limit'])
 
+        # preserve college_id (do not overwrite)
+
         mcq.save()
         return response(True, 'MCQ updated', mcq.to_json()), 200
     except DoesNotExist:
@@ -445,17 +492,21 @@ def patch_mcq(mcq_id):
     except Exception as e:
         return response(False, f'Error: {str(e)}'), 500
 
-
 # ---------------------------
 # Delete MCQ by ID
-# - By default deletes irrespective of created_by
-# - Use ?mine=true to enforce created_by match
+# - Enforce admin college ownership
 # ---------------------------
 @mcq_bp.route("/<string:mcq_id>", methods=["DELETE"])
 @token_required
 def delete_mcq(mcq_id):
     try:
         mcq = MCQ.objects.get(id=mcq_id)
+
+        # Ownership check: ensure same college
+        forbid = _ensure_same_college_or_forbid(getattr(mcq, "college_id", None))
+        if forbid:
+            return forbid
+
         mcq.delete()
         return response(True, "MCQ deleted successfully"), 200
 

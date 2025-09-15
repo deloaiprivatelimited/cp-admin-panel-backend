@@ -24,7 +24,7 @@ from mongoengine.errors import DoesNotExist, ValidationError
 from mongoengine.errors import DoesNotExist, ValidationError
 
 # Import the Document classes from your models module
-from models.questions.coding import Question, CourseQuestion
+from models.questions.coding import Question, CourseQuestion, CollegeQuestion
 
 bp = Blueprint('questions', __name__)
 
@@ -73,7 +73,26 @@ def _serialize_question(q):
     data['run_code_enabled'] = q.run_code_enabled
     data['submission_enabled'] = q.submission_enabled
 
+    # If this is a CollegeQuestion, optionally include college_id (non-sensitive)
+    if hasattr(q, "college_id"):
+        data["college_id"] = getattr(q, "college_id", None)
+
     return data
+
+
+def _model_for_collection(collection):
+    """
+    Map the collection string to the model class.
+    Adds support for 'college_questions' -> CollegeQuestion.
+    """
+    if collection == 'questions':
+        return Question
+    elif collection == 'course_questions':
+        return CourseQuestion
+    elif collection == 'college_questions':
+        return CollegeQuestion
+    else:
+        return None
 
 
 @bp.route('/<collection>/<question_id>', methods=['GET'])
@@ -96,11 +115,9 @@ def get_question(collection, question_id):
         # Not a valid ObjectId - still try to load by string id in case your setup uses plain strings
         pass
 
-    if collection == 'questions':
-        Model = Question
-    elif collection == 'course_questions':
-        Model = CourseQuestion
-    else:
+    Model = _model_for_collection(collection)
+    print(collection)
+    if Model is None:
         abort(404, description='Invalid collection')
 
     try:
@@ -292,11 +309,8 @@ def run_submission(collection, question_id):
         return jsonify({"error": "source_code and language are required"}), 400
 
     # pick model
-    if collection == 'questions':
-        Model = Question
-    elif collection == 'course_questions':
-        Model = CourseQuestion
-    else:
+    Model = _model_for_collection(collection)
+    if Model is None:
         abort(404, description='Invalid collection')
 
     try:
@@ -393,6 +407,7 @@ def run_submission(collection, question_id):
         "result": safe_response
     })
 
+
 from datetime import datetime, timedelta
 
 import os
@@ -414,7 +429,7 @@ def submit_question(collection, question_id):
 
     Response (safe): {
       submission_id, question_id, verdict, total_score, max_score,
-      groups: [{ name: "Group 1", group_max_points, group_points_awarded, cases: [{ name: "Testcase 1", passed, points_awarded, time, memory, judge_token? }] }]
+      groups: [{ name: "Group 1", group_max_points, group_points_awarded, cases: [{ name: "Testcase 1", passed, points_awarded, time, memory, judge_token? }] } ]
     }
     """
     # --- Auth: read JWT and extract user id ---
@@ -440,11 +455,8 @@ def submit_question(collection, question_id):
         return jsonify({"error": "source_code and language are required"}), 400
 
     # --- Model selection ---
-    if collection == 'questions':
-        Model = Question
-    elif collection == 'course_questions':
-        Model = CourseQuestion
-    else:
+    Model = _model_for_collection(collection)
+    if Model is None:
         abort(404, description='Invalid collection')
 
     try:
@@ -834,3 +846,144 @@ def mock_submit(collection, question_id):
     current_app.logger.debug("Mock submit called for %s/%s; method=%s", collection, question_id, request.method)
 
     return jsonify(sample), 200
+
+@bp.route('/<collection>/<question_id>/mock-run', methods=['POST', 'GET'])
+def mock_run(collection, question_id):
+    """
+    Dev-only: return a static run payload for testing UI / client.
+    URL: /<collection>/<question_id>/mock-run
+    Accepts POST or GET. Ignores body and auth.
+    """
+    sample = {
+        "question_id": question_id,
+        "language_id": 71,   # Python 3
+        "result": {
+            "token": "mock-token-12345",
+            "status": {"id": 3, "description": "Accepted"},
+            "stdout": "Hello World\n",
+            "stderr": "",
+            "compile_output": None,
+            "message": None,
+            "time": "0.005",
+            "memory": 3456
+        }
+    }
+
+    current_app.logger.debug("Mock run called for %s/%s; method=%s", collection, question_id, request.method)
+
+    return jsonify(sample), 200
+
+
+# GET /<collection>/<question_id>/my-submissions
+@bp.route('/<collection>/<question_id>/my-submissions', methods=['GET'])
+def my_submissions(collection, question_id):
+    """
+    Return only the authenticated user's submissions for a given question.
+    - Auth: Authorization: Bearer <token>
+    - Query params:
+        page (default=1), per_page (default=20, max=200)
+        include_case_details (true/false, default=true)
+    - Never returns judge_token or testcase IDs.
+    """
+    # pagination
+    try:
+        page = max(1, int(request.args.get('page', 1)))
+    except Exception:
+        page = 1
+    try:
+        per_page = int(request.args.get('per_page', 20))
+    except Exception:
+        per_page = 20
+    per_page = min(max(1, per_page), 200)
+    include_case_details = request.args.get('include_case_details', 'true').lower() not in ('0', 'false', 'no')
+
+    # auth
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return jsonify({"error": "Authorization required"}), 401
+    token = auth_header.split(" ", 1)[1]
+    try:
+        payload = verify_access_token(token)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 401
+
+    user_id = payload.get("sub") or payload.get("id")
+    if not user_id:
+        return jsonify({"error": "Invalid token payload"}), 401
+
+    # pick question model (mirror your existing logic)
+    Model = _model_for_collection(collection)
+    if Model is None:
+        abort(404, description='Invalid collection')
+
+    # ensure question exists (optional: require published)
+    try:
+        q = Model.objects.get(id=question_id)
+    except (DoesNotExist, ValidationError):
+        abort(404, description='Question not found')
+
+    # If you want to restrict to published questions uncomment below:
+    # if not getattr(q, "published", False):
+    #     abort(404, description="Question not available")
+
+    # Query only this user's submissions for the given question & collection
+    query = {
+        "question_id": str(q.id),
+        "collection": collection,
+        "user_id": str(user_id)
+    }
+
+    total = Submission.objects(__raw__=query).count()
+    skip = (page - 1) * per_page
+    submissions = Submission.objects(__raw__=query).order_by("-created_at").skip(skip).limit(per_page)
+
+    def _case_summary_from_cr(cr, idx):
+        # safe per-case summary -> no judge_token or testcase ids
+        passed = False
+        try:
+            if isinstance(cr.status, dict):
+                st_id = cr.status.get("id")
+                passed = (st_id == 3) or (str(cr.status.get("description", "")).lower().startswith("accepted"))
+            else:
+                passed = str(cr.status).lower().find("accepted") != -1
+        except Exception:
+            passed = False
+
+        return {
+            "name": f"Testcase {idx + 1}",
+            "passed": bool(passed),
+            "points_awarded": int(getattr(cr, "points_awarded", 0) or 0),
+            "time": getattr(cr, "time", None),
+            "memory": getattr(cr, "memory", None),
+        }
+
+    items = []
+    for sub in submissions:
+        case_results = getattr(sub, "case_results", []) or []
+        cases = []
+        if include_case_details:
+            for idx, cr in enumerate(case_results):
+                cases.append(_case_summary_from_cr(cr, idx))
+        print(sub)
+
+        item = {
+            "submission_id": str(sub.id),
+            "question_id": str(sub.question_id),
+            "language" : sub.language,
+            "source_code" : sub.source_code,
+            "verdict": getattr(sub, "verdict", None),
+            "total_score": int(getattr(sub, "total_score", 0) or 0),
+            "max_score": int(getattr(sub, "max_score", 0) or 0),
+            "created_at": sub.created_at.isoformat() if getattr(sub, "created_at", None) else None,
+        }
+        if include_case_details:
+            item["cases"] = cases
+
+        items.append(item)
+
+    return jsonify({
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "items": items
+    }), 200

@@ -138,6 +138,31 @@ class CourseQuestion(BaseQuestion):
         ]
     }
 
+
+class TestQuestion(BaseQuestion):
+     meta = {
+        "collection": "test_questions",
+        "indexes": [
+            ("published", "topic"),
+            {"fields": ["tags"], "sparse": True},
+            {"fields": ["allowed_languages"], "sparse": True},  # optional: query by language
+        ]
+    }
+     
+
+class CollegeQuestion(BaseQuestion):
+    college_id = StringField(required=True)  # ✅ mandatory field for college linkage
+
+    meta = {
+        "collection": "college_questions",
+        "indexes": [
+            ("published", "topic"),
+            {"fields": ["tags"], "sparse": True},
+            {"fields": ["allowed_languages"], "sparse": True},
+            "college_id",  # ✅ useful index if you query by college_id often
+        ]
+    }
+
 # Add imports near top of models.py
 from mongoengine import EmbeddedDocumentField
 

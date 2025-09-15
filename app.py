@@ -16,6 +16,21 @@ from routes.course.mcq import course_mcq_bp
 from routes.course.rearrange import course_rearrange_bp
 from routes.course.coding import course_coding_q_bp
 from routes.coding.coding_question import bp as coding_bp
+
+from routes.faculty_admin.test.tests import test_bp
+from routes.faculty_admin.college_admin import collegeadmin_bp
+from routes.faculty_admin.student_routes import bp
+from routes.faculty_admin.test_mail import test_mail
+from routes.faculty_admin.test.section import test_bp as section_bp
+from routes.faculty_admin.test.questions.mcq import mcq_bp as test_mcq_bp
+from routes.faculty_admin.test.questions.coding import coding_bp as test_coding_bp
+from routes.faculty_admin.test.questions.rearrange import rearrange_bp as test_rearrange_bp
+
+
+
+from routes.faculty_admin.questions.coding import coding_q_bp as college_coding_q_bp
+from routes.faculty_admin.questions.mcq import mcq_bp as college_mcq_bp
+from routes.faculty_admin.questions.rearrange import rearrange_bp as college_rearrange_bp
 # Load environment variables
 load_dotenv()
 
@@ -41,6 +56,26 @@ def create_app():
     app.register_blueprint(course_rearrange_bp, url_prefix="/course-rearranges")
     app.register_blueprint(course_coding_q_bp, url_prefix="/course-coding-questions")
     app.register_blueprint(coding_bp,url_prefix="/coding/questions")
+
+
+
+    
+    app.register_blueprint(collegeadmin_bp)
+    app.register_blueprint(bp)
+    app.register_blueprint(test_mail)
+    app.register_blueprint(test_bp)
+    app.register_blueprint(section_bp)
+    app.register_blueprint(test_mcq_bp)
+    app.register_blueprint(test_rearrange_bp)
+    app.register_blueprint(test_coding_bp)
+
+
+    app.register_blueprint(college_coding_q_bp, url_prefix="/college-coding-questions")
+    app.register_blueprint(college_mcq_bp, url_prefix="/college-mcqs")
+    app.register_blueprint(college_rearrange_bp, url_prefix="/college-rearranges")
+
+
+
     @app.route("/")
     def home():
         return {"message": "CP Admin API is running 🚀"}

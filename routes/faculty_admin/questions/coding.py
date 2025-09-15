@@ -6,15 +6,14 @@ from datetime import datetime
 from mongoengine.errors import ValidationError, DoesNotExist
 from mongoengine.queryset.visitor import Q
 
-from models.courses.coding import (
-     TestCaseGroup,
-    SampleIO, AttemptPolicy,TestCase
+from models.questions.coding import (
+    CollegeQuestion as Question, TestCaseGroup,
+    SampleIO, AttemptPolicy, TestCase
 )
-from models.questions.coding import CourseQuestion as Question
 from utils.jwt import verify_access_token
 from utils.response import response
-from models.courses.courses import Unit
-course_coding_q_bp = Blueprint("course_coding_q_bp", __name__)
+
+coding_q_bp = Blueprint("college_coding_q_bp", __name__)
 
 
 # ---------------------------
@@ -42,12 +41,34 @@ def token_required(f):
 
 
 # ---------------------------
+# Helper: college permission check
+# ---------------------------
+def _get_admin_college_id():
+    admin_payload = getattr(request, "admin", {}) or {}
+    return admin_payload.get("college_id")
+
+
+def _ensure_same_college_or_forbid(obj_college_id):
+    """
+    If admin has no college_id or it does not match obj_college_id,
+    return a response tuple (body, status). Otherwise return None.
+    """
+    admin_college_id = _get_admin_college_id()
+    if admin_college_id is None:
+        return response(False, "Forbidden: admin has no college_id"), 403
+    # Compare as strings to be tolerant of types
+    if str(admin_college_id) != str(obj_college_id):
+        return response(False, "Forbidden: resource does not belong to your college"), 403
+    return None
+
+
+# ---------------------------
 # Create new coding question (no testcases)
 # ---------------------------
 
-@course_coding_q_bp.route("/minimal/<string:unit_id>", methods=["POST"])
+@coding_q_bp.route("/minimal", methods=["POST"])
 @token_required
-def add_question_minimal(unit_id):
+def add_question_minimal():
     """
     Create question with ONLY title and authors.
     'authors' is filled directly with request.admin (from token).
@@ -55,10 +76,6 @@ def add_question_minimal(unit_id):
     """
     try:
         data = request.get_json(force=True) or {}
-        unit = Unit.objects(id=unit_id).first()
-        if not unit:
-            return response(False, f"Unit with id {unit_id} not found"), 404
-
         title = data.get("title")
         if not title:
             return response(False, "title is required"), 400
@@ -68,14 +85,10 @@ def add_question_minimal(unit_id):
         topic = data.get("topic", "").strip()
         short_description = short_description.strip()
 
-        print(topic)
-        # store admin payload exactly as it is
         admin_payload = getattr(request, "admin", {}) or {}
-                # subtopic: not in model by default — attach dynamically (no persistence unless model updated)
-                # Persist subtopic (ensure model has `subtopic` StringField)
-        subtopic = data.get("subtopic", "").strip()
-        print(subtopic)
+        college_id = admin_payload.get("college_id")
 
+        subtopic = data.get("subtopic", "").strip()
 
         q = Question(
             topic=topic,
@@ -84,20 +97,14 @@ def add_question_minimal(unit_id):
             short_description=short_description,
             authors=[admin_payload],  # just store raw admin dict
             created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
+            updated_at=datetime.utcnow(),
+            college_id=college_id,    # persist college_id
         )
-        print(q.topic)
-        print(q.subtopic)
-  
         q.save()
-        unit.coding =q
-        unit.unit_type ="coding"
-        unit.save()
 
         return response(True, "Coding Question created", {"id": str(q.id), "title": q.title}), 201
 
     except ValidationError as ve:
-        print(ve)
         return response(False, f"Validation error: {ve}"), 400
     except Exception as e:
         return response(False, f"Error: {str(e)}"), 500
@@ -107,7 +114,7 @@ def add_question_minimal(unit_id):
 # List minimal questions (public) - supports search, topic, tags, pagination
 # GET /minimal
 # ---------------------------
-@course_coding_q_bp.route("/minimal", methods=["GET"])
+@coding_q_bp.route("/minimal", methods=["GET"])
 def list_minimal_questions():
     try:
         # params
@@ -186,10 +193,9 @@ def list_minimal_questions():
             data.append({
                 "id": str(item.id),
                 "title": item.title,
-
                 "shortDescription": item.short_description or "",
                 "topic": item.topic or "",
-                "subtopic":item.subtopic or "",
+                "subtopic": item.subtopic or "",
                 "tags": list(item.tags or []),
                 "difficulty": (item.difficulty.capitalize() if item.difficulty else "Easy")
             })
@@ -209,21 +215,12 @@ def list_minimal_questions():
         return response(False, f"Error: {str(e)}"), 500
 
 
-
-@course_coding_q_bp.route("/form/<question_id>", methods=["POST", "PUT"])
+@coding_q_bp.route("/form/<question_id>", methods=["POST", "PUT"])
 @token_required
 def save_question_form(question_id):
     """
     Update only the form fields of an existing question.
     Does NOT create or modify any testcases/testcase groups.
-    Accepted JSON fields:
-      - title, topic, subtopic (subtopic not persisted unless you add to model)
-      - tags (string comma-separated or list)
-      - timeLimit (seconds) OR timeLimitMs (milliseconds)
-      - memoryLimit (MB) OR memoryLimitKb (KB)
-      - shortDescription, fullDescription
-      - sampleIO: [{ input, output, explanation }, ...]
-      - allowedLanguages: list or comma-separated string
     """
     try:
         data = request.get_json(force=True) or {}
@@ -237,6 +234,11 @@ def save_question_form(question_id):
     except Exception as e:
         return response(False, f"Error fetching question: {str(e)}"), 500
 
+    # Ownership check: only admins from same college can update
+    forbid = _ensure_same_college_or_forbid(getattr(q, "college_id", None))
+    if forbid:
+        return forbid
+
     try:
         # Basic fields
         if "title" in data and data.get("title") is not None:
@@ -248,7 +250,7 @@ def save_question_form(question_id):
         # subtopic: not in model by default — attach dynamically (no persistence unless model updated)
         if "subtopic" in data:
             q.subtopic = (data.get("subtopic") or "").strip()
- # Difficulty: accept only allowed choices
+        # Difficulty: accept only allowed choices
         if "difficulty" in data:
             raw = data.get("difficulty")
             try:
@@ -393,7 +395,6 @@ def save_question_form(question_id):
                     elif s in ("false", "0", "no"):
                         q.published = False
 
-
         # authors: append admin payload (store exact admin dict if not duplicate)
         admin_payload = getattr(request, "admin", {}) or {}
         if admin_payload:
@@ -422,7 +423,8 @@ def save_question_form(question_id):
 # ---------------------------
 # Get form values only (no testcase info)
 # ---------------------------
-@course_coding_q_bp.route("/form/<question_id>", methods=["GET"])
+@coding_q_bp.route("/form/<question_id>", methods=["GET"])
+@token_required
 def get_question_for_form(question_id):
     try:
         q = Question.objects.get(id=question_id)
@@ -430,6 +432,11 @@ def get_question_for_form(question_id):
         return response(False, "Question not found"), 404
     except Exception as e:
         return response(False, f"Error fetching question: {str(e)}"), 500
+
+    # Ownership check: only admins from same college can fetch
+    forbid = _ensure_same_college_or_forbid(getattr(q, "college_id", None))
+    if forbid:
+        return forbid
 
     try:
         # convert stored ms/kb -> frontend seconds/MB
@@ -467,14 +474,12 @@ def get_question_for_form(question_id):
             "tags": list(q.tags or []),
             "timeLimit": time_limit_seconds,
             "memoryLimit": memory_limit_mb,
-                        "showBoilerplates": bool(getattr(q, "show_boilerplates", True)),
-                        "showSolution": bool(getattr(q, "show_solution", False)),
-                        "published": bool(getattr(q, "published", False)),
-                        "runCodeEnabled": bool(getattr(q, "run_code_enabled", True)),
-                        "submissionEnabled": bool(getattr(q, "submission_enabled", True)),
-                                    "difficulty": (getattr(q, "difficulty", None) or "medium"),
-
-
+            "showBoilerplates": bool(getattr(q, "show_boilerplates", True)),
+            "showSolution": bool(getattr(q, "show_solution", False)),
+            "published": bool(getattr(q, "published", False)),
+            "runCodeEnabled": bool(getattr(q, "run_code_enabled", True)),
+            "submissionEnabled": bool(getattr(q, "submission_enabled", True)),
+            "difficulty": (getattr(q, "difficulty", None) or "medium"),
             "shortDescription": q.short_description or "",
             "fullDescription": q.long_description_markdown or "",
             "sampleIO": sample_io,
@@ -490,7 +495,7 @@ def get_question_for_form(question_id):
 
 # ---------------------------
 # TestCaseGroup endpoints
-# - GET  /<question_id>/testcase-groups         -> list groups for a question
+# - GET  /<question_id>/testcase-groups         -> list groups for a question (now protected)
 # - POST /<question_id>/testcase-groups         -> create a new group (token_required)
 # - PUT  /testcase-group/<group_id>             -> update an existing group (token_required)
 # Notes:
@@ -498,14 +503,19 @@ def get_question_for_form(question_id):
 #  - They DO NOT modify Question fields (except optional denormalized question_id on group).
 # ---------------------------
 
-@course_coding_q_bp.route("/<question_id>/testcase-groups", methods=["GET"])
+@coding_q_bp.route("/<question_id>/testcase-groups", methods=["GET"])
+@token_required
 def list_testcase_groups(question_id):
     try:
-        # ensure question exists (optional; if you prefer skip, remove this block)
+        # ensure question exists and ownership
         try:
-            Question.objects.get(id=question_id)
+            q = Question.objects.get(id=question_id)
         except DoesNotExist:
             return response(False, "Question not found"), 404
+
+        forbid = _ensure_same_college_or_forbid(getattr(q, "college_id", None))
+        if forbid:
+            return forbid
 
         groups = TestCaseGroup.objects(question_id=str(question_id)).order_by("name")
         out = []
@@ -542,20 +552,13 @@ def list_testcase_groups(question_id):
         return response(False, f"Error fetching testcase groups: {str(e)}"), 500
 
 
-@course_coding_q_bp.route("/<question_id>/testcase-groups", methods=["POST", "PUT"])
+@coding_q_bp.route("/<question_id>/testcase-groups", methods=["POST", "PUT"])
 @token_required
 def upsert_testcase_group(question_id):
     """
     Create or update a TestCaseGroup.
     - If body has "groupId" → update that group.
     - If no "groupId" → create a new group for the given question.
-    Accepted JSON:
-      - groupId (optional, required for update)
-      - name (required on create, optional on update)
-      - weight (int)
-      - visibility ("public"|"hidden")
-      - scoring_strategy ("binary"|"partial")
-      - cases: list of testcase ids or inline objects { input, expected_output, time_limit_ms?, memory_limit_kb? }
     """
     try:
         data = request.get_json(force=True) or {}
@@ -590,11 +593,15 @@ def upsert_testcase_group(question_id):
         return resolved
 
     try:
-        # ensure question exists
+        # ensure question exists and ownership
         try:
-            Question.objects.get(id=question_id)
+            q = Question.objects.get(id=question_id)
         except DoesNotExist:
             return response(False, "Question not found"), 404
+
+        forbid = _ensure_same_college_or_forbid(getattr(q, "college_id", None))
+        if forbid:
+            return forbid
 
         group_id = data.get("groupId")
 
@@ -603,6 +610,15 @@ def upsert_testcase_group(question_id):
                 group = TestCaseGroup.objects.get(id=group_id)
             except DoesNotExist:
                 return response(False, "Test case group not found"), 404
+
+            # also ensure the group's associated question belongs to same college
+            try:
+                parent_q = Question.objects.get(id=group.question_id)
+                forbid2 = _ensure_same_college_or_forbid(getattr(parent_q, "college_id", None))
+                if forbid2:
+                    return forbid2
+            except DoesNotExist:
+                pass
 
             if "name" in data:
                 group.name = (data.get("name") or group.name).strip()
@@ -622,6 +638,13 @@ def upsert_testcase_group(question_id):
 
             group.updated_at = datetime.utcnow()
             group.save()
+            try:
+                q = Question.objects.get(id=group.question_id)
+                if group not in q.testcase_groups:
+                    q.testcase_groups.append(group)
+                    q.save()
+            except DoesNotExist:
+                pass
 
             return response(True, "Test case group updated", {"id": str(group.id)}), 200
 
@@ -644,6 +667,15 @@ def upsert_testcase_group(question_id):
             )
             group.save()
 
+            # attach to question.document to keep the denormalized reference list in sync
+            try:
+                q = Question.objects.get(id=question_id)
+                if group not in q.testcase_groups:
+                    q.testcase_groups.append(group)
+                    q.save()
+            except DoesNotExist:
+                pass
+
             return response(True, "Test case group created", {"id": str(group.id)}), 201
 
     except ValidationError as ve:
@@ -651,7 +683,8 @@ def upsert_testcase_group(question_id):
     except Exception as e:
         return response(False, f"Error saving testcase group: {str(e)}"), 500
 
-@course_coding_q_bp.route("/testcase-group/<group_id>", methods=["DELETE"])
+
+@coding_q_bp.route("/testcase-group/<group_id>", methods=["DELETE"])
 @token_required
 def delete_testcase_group(group_id):
     """
@@ -662,6 +695,16 @@ def delete_testcase_group(group_id):
             group = TestCaseGroup.objects.get(id=group_id)
         except DoesNotExist:
             return response(False, "Test case group not found"), 404
+
+        # Ensure group's parent question belongs to admin's college
+        try:
+            parent_q = Question.objects.get(id=group.question_id)
+            forbid = _ensure_same_college_or_forbid(getattr(parent_q, "college_id", None))
+            if forbid:
+                return forbid
+        except DoesNotExist:
+            # defensive: allow deletion if parent missing? prefer forbid
+            return response(False, "Parent question not found"), 404
 
         # delete all referenced TestCases
         for tc in (group.cases or []):
@@ -688,12 +731,11 @@ def delete_testcase_group(group_id):
 # PUT  /form/<question_id>/boilerplates    -> alias to POST
 # ---------------------------
 
-@course_coding_q_bp.route("/form/<question_id>/boilerplates", methods=["GET"])
+@coding_q_bp.route("/form/<question_id>/boilerplates", methods=["GET"])
+@token_required
 def get_predefined_boilerplates(question_id):
     """
     Return the predefined boilerplates for the given question.
-    Response payload:
-      { "id": "<question_id>", "predefined_boilerplates": { "python": "...", "cpp": "..." } }
     """
     try:
         try:
@@ -701,8 +743,11 @@ def get_predefined_boilerplates(question_id):
         except DoesNotExist:
             return response(False, "Question not found"), 404
 
+        forbid = _ensure_same_college_or_forbid(getattr(q, "college_id", None))
+        if forbid:
+            return forbid
+
         boilerplates = q.predefined_boilerplates or {}
-        # Ensure it's always a dict
         if not isinstance(boilerplates, dict):
             boilerplates = {}
 
@@ -715,22 +760,11 @@ def get_predefined_boilerplates(question_id):
         return response(False, f"Error fetching boilerplates: {str(e)}"), 500
 
 
-@course_coding_q_bp.route("/form/<question_id>/boilerplates", methods=["POST", "PUT"])
+@coding_q_bp.route("/form/<question_id>/boilerplates", methods=["POST", "PUT"])
 @token_required
 def upsert_predefined_boilerplates(question_id):
     """
     Create or update predefined boilerplates for a question.
-
-    Accepts JSON in either of these forms:
-      1) Full object:
-         { "predefined_boilerplates": { "python": "def solve(): ...", "cpp": "..." } }
-      2) Single language update:
-         { "language": "python", "code": "def solve(): ..." }
-
-    Behavior:
-      - Merges updates into existing boilerplates (does not delete unspecified languages).
-      - If an empty object is provided for predefined_boilerplates, it will clear them.
-      - Bumps question.version and appends request.admin to authors if new.
     """
     try:
         try:
@@ -743,7 +777,10 @@ def upsert_predefined_boilerplates(question_id):
         except DoesNotExist:
             return response(False, "Question not found"), 404
 
-        # current boilerplates (ensure dict)
+        forbid = _ensure_same_college_or_forbid(getattr(q, "college_id", None))
+        if forbid:
+            return forbid
+
         current = q.predefined_boilerplates or {}
         if not isinstance(current, dict):
             current = {}
@@ -754,10 +791,8 @@ def upsert_predefined_boilerplates(question_id):
         if "predefined_boilerplates" in data:
             pb = data.get("predefined_boilerplates") or {}
             if isinstance(pb, dict):
-                # merge keys: overwrite only the provided languages
                 for lang, code in pb.items():
                     if code is None or (isinstance(code, str) and code.strip() == ""):
-                        # if explicitly empty string/null, remove that lang
                         if lang in updated:
                             updated.pop(lang, None)
                     else:
@@ -772,17 +807,12 @@ def upsert_predefined_boilerplates(question_id):
             if not lang:
                 return response(False, "language is required"), 400
             if code is None or (isinstance(code, str) and code.strip() == ""):
-                # remove language if empty
                 updated.pop(lang, None)
             else:
                 updated[lang] = str(code)
 
         else:
             return response(False, "No boilerplate payload provided"), 400
-
-        # (Optional) validate languages against allowed set if needed
-        # allowed_set = set(["python", "cpp", "java", "javascript", "c"])
-        # updated = {k: v for k, v in updated.items() if k in allowed_set}
 
         q.predefined_boilerplates = updated
 
@@ -821,12 +851,11 @@ def upsert_predefined_boilerplates(question_id):
 # PUT  /form/<question_id>/solution    -> alias to POST
 # ---------------------------
 
-@course_coding_q_bp.route("/form/<question_id>/solution", methods=["GET"])
+@coding_q_bp.route("/form/<question_id>/solution", methods=["GET"])
+@token_required
 def get_solution_code(question_id):
     """
     Return the stored solution_code for the given question.
-    Response payload:
-      { "id": "<question_id>", "solution_code": { "python": "...", "cpp": "..." } }
     """
     try:
         try:
@@ -834,8 +863,11 @@ def get_solution_code(question_id):
         except DoesNotExist:
             return response(False, "Question not found"), 404
 
+        forbid = _ensure_same_college_or_forbid(getattr(q, "college_id", None))
+        if forbid:
+            return forbid
+
         solution = q.solution_code or {}
-        # Ensure it's always a dict
         if not isinstance(solution, dict):
             solution = {}
 
@@ -848,30 +880,16 @@ def get_solution_code(question_id):
         return response(False, f"Error fetching solution code: {str(e)}"), 500
 
 
-@course_coding_q_bp.route("/form/<question_id>/solution", methods=["POST", "PUT"])
+@coding_q_bp.route("/form/<question_id>/solution", methods=["POST", "PUT"])
 @token_required
 def upsert_solution_code(question_id):
     """
     Create or update solution_code for a question.
-
-    Accepts JSON in either of these forms:
-      1) Full object:
-         { "solution_code": { "python": "def solve(): ...", "cpp": "..." } }
-      2) Single language update:
-         { "language": "python", "code": "def solve(): ..." }
-
-    Behavior:
-      - Merges updates into existing solution_code (does not delete unspecified languages).
-      - If an empty object is provided for solution_code, it will clear them.
-      - If a specific language is provided with an empty/null code it will remove that language.
-      - Bumps question.version and appends request.admin to authors if new.
     """
     try:
         try:
             data = request.get_json(force=True) or {}
-            print(data)
         except Exception:
-            print('sds')
             return response(False, "Invalid JSON"), 400
 
         try:
@@ -879,7 +897,10 @@ def upsert_solution_code(question_id):
         except DoesNotExist:
             return response(False, "Question not found"), 404
 
-        # current solution code (ensure dict)
+        forbid = _ensure_same_college_or_forbid(getattr(q, "college_id", None))
+        if forbid:
+            return forbid
+
         current = q.solution_code or {}
         if not isinstance(current, dict):
             current = {}
@@ -890,10 +911,8 @@ def upsert_solution_code(question_id):
         if "solution_code" in data:
             sc = data.get("solution_code") or {}
             if isinstance(sc, dict):
-                # merge keys: overwrite only the provided languages
                 for lang, code in sc.items():
                     if code is None or (isinstance(code, str) and code.strip() == ""):
-                        # if explicitly empty string/null, remove that lang
                         updated.pop(lang, None)
                     else:
                         updated[str(lang)] = str(code)
@@ -907,17 +926,12 @@ def upsert_solution_code(question_id):
             if not lang:
                 return response(False, "language is required"), 400
             if code is None or (isinstance(code, str) and code.strip() == ""):
-                # remove language if empty
                 updated.pop(lang, None)
             else:
                 updated[lang] = str(code)
 
         else:
             return response(False, "No solution payload provided"), 400
-
-        # (Optional) validate languages against allowed set if needed
-        # allowed_set = set(["python", "cpp", "java", "javascript", "c"])
-        # updated = {k: v for k, v in updated.items() if k in allowed_set}
 
         q.solution_code = updated
 
@@ -948,25 +962,26 @@ def upsert_solution_code(question_id):
     except Exception as e:
         return response(False, f"Error saving solution code: {str(e)}"), 500
 
+
 # ---------------------------
 # Delete coding question (and all references)
 # DELETE /<question_id>
 # ---------------------------
-@course_coding_q_bp.route("/<question_id>", methods=["DELETE"])
+@coding_q_bp.route("/<question_id>", methods=["DELETE"])
 @token_required
 def delete_coding_question(question_id):
     """
-    Delete a coding question by ID along with all related references:
-      - TestCaseGroups
-      - TestCases inside those groups
-      - Predefined boilerplates
-      - Solution code
+    Delete a coding question by ID along with all related references.
     """
     try:
         try:
             q = Question.objects.get(id=question_id)
         except DoesNotExist:
             return response(False, "Question not found"), 404
+
+        forbid = _ensure_same_college_or_forbid(getattr(q, "college_id", None))
+        if forbid:
+            return forbid
 
         # Delete all TestCaseGroups and their TestCases
         groups = TestCaseGroup.objects(question_id=str(question_id))
