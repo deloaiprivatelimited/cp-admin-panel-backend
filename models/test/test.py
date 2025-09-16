@@ -74,7 +74,10 @@ class Test(Document):
         return {
             "id": str(self.id),
             "test_name": self.test_name,
+            "tags" : self.tags,
             "description": self.description,
+                        "instructions": self.instructions,
+
             "notes": self.notes,  # ✅ Included separately
             "duration_seconds": int(self.duration_seconds) if self.duration_seconds is not None else None,
             "start_datetime": self.start_datetime.isoformat() if self.start_datetime else None,

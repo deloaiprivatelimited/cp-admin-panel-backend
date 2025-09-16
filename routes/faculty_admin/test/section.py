@@ -181,6 +181,7 @@ def get_sections_by_test(test_id):
 
     # convert to json
     data = {
+        "test" : test.to_minimal_json(),
         "sections_time_restricted": [s.to_json() for s in sections_time],
         "sections_open": [s.to_json() for s in sections_open],
     }
