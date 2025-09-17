@@ -200,3 +200,7 @@ class CollegeMCQ(BaseMCQ):
 
     meta = {"collection": "college_mcqs"}
 
+    def to_json(self):
+        base_json = super().to_json()
+        base_json["college_id"] = self.college_id
+        return base_json

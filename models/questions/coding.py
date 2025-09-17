@@ -117,6 +117,48 @@ class BaseQuestion(Document):
         self.updated_at = datetime.utcnow()
         return super().save(*args, **kwargs)
 
+    def to_safe_json(self):
+        """
+        Returns a safe JSON-like dict representation of the question,
+        excluding sensitive/internal fields such as solution_code and
+        referenced testcases.
+        """
+        return {
+            "id": str(self.id),
+            "title": self.title,
+            "topic": self.topic,
+            "subtopic": self.subtopic,
+            "tags": self.tags,
+            "short_description": self.short_description,
+            "long_description_markdown": self.long_description_markdown,
+            "difficulty": self.difficulty,
+            "points": self.points,
+            "time_limit_ms": self.time_limit_ms,
+            "memory_limit_kb": self.memory_limit_kb,
+            "solution_code" : self.solution_code,
+            "predefined_boilerplates": self.predefined_boilerplates,
+            "show_boilerplates": self.show_boilerplates,
+            "run_code_enabled": self.run_code_enabled,
+            "submission_enabled": self.submission_enabled,
+            "sample_io": [
+                {
+                    "input_text": s.input_text,
+                    "output": s.output,
+                    "explanation": s.explanation,
+                }
+                for s in self.sample_io
+            ],
+            "allowed_languages": self.allowed_languages,
+            "published": self.published,
+            "version": self.version,
+            "authors": self.authors,
+            "attempt_policy": {
+                "max_attempts_per_minute": self.attempt_policy.max_attempts_per_minute,
+                "submission_cooldown_sec": self.attempt_policy.submission_cooldown_sec,
+            } if self.attempt_policy else None,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
 
 class Question(BaseQuestion):
      meta = {
@@ -162,6 +204,10 @@ class CollegeQuestion(BaseQuestion):
             "college_id",  # ✅ useful index if you query by college_id often
         ]
     }
+    def to_json(self):
+        base_json = super().to_json()
+        base_json["college_id"] = self.college_id
+        return base_json
 
 # Add imports near top of models.py
 from mongoengine import EmbeddedDocumentField

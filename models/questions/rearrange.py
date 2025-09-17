@@ -198,6 +198,10 @@ class CollegeRearrange(BaseRearrange):
 
     """Model for a 'rearrange these items in correct order' question"""
     meta = {"collection": "college_rearrange"}
+    def to_json(self):
+        base_json = super().to_json()
+        base_json["college_id"] = self.college_id
+        return base_json
 
 class TestRearrange(BaseRearrange):
     """Model for a 'rearrange these items in correct order' question"""
