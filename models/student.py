@@ -58,3 +58,23 @@ class Student(Document):
 
     def check_password(self, password: str) -> bool:
         return check_password_hash(self.password_hash, password)
+
+    def to_json_academic(self):
+        from .student import Student  # avoid circular import issues if any
+
+        return {
+            "academic": {
+                "usn": self.usn,
+                "enrollment_number": self.enrollment_number,
+                "branch": self.branch,
+                "year_of_study": self.year_of_study,
+                "semester": self.semester,
+                "cgpa": self.cgpa,
+                "college": str(self.college.id) if self.college else None
+            },
+            "meta": {
+                "available_branches": Student.objects.distinct("branch"),
+                "available_years_of_study": Student.objects.distinct("year_of_study"),
+                "available_semesters": Student.objects.distinct("semester")
+            }
+        }

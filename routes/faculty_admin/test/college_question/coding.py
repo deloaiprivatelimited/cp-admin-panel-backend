@@ -130,7 +130,7 @@ def list_coding_questions():
         items = list(qs[start:end])
 
         total_pages = ceil(total / per_page) if per_page else 1
-        items_json = [coding_minimal_to_json(q) for q in items]
+        items_json = [q.to_safe_json() for q in items]
 
         # derive meta (topics/tags/difficulties) by simple distinct queries; consider keeping a config doc
         topics = Question.objects.distinct("topic") or []

@@ -159,7 +159,7 @@ def list_mcqs():
 
         total_pages = ceil(total / per_page) if per_page else 1
 
-        items_json = [mcq_minimal_to_json(m) for m in items]
+        items_json = [m.to_json() for m in items]
 
         # meta: try to use MCQConfig document if available for canonical lists
         config = None

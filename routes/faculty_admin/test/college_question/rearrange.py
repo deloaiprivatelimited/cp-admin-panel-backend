@@ -124,7 +124,7 @@ def list_rearranges():
         items = list(qs[start:end])
 
         total_pages = ceil(total / per_page) if per_page else 1
-        items_json = [rearrange_minimal_to_json(r) for r in items]
+        items_json = [r.to_json() for r in items]
 
         # attempt to read a config-like doc if you create one for rearranges; fallback to distinct queries
         try:

@@ -40,12 +40,19 @@ def token_required(f):
 
     return decorated
 # POST /tests/<test_id>/sections
+# POST /<test_id>/sections
 @test_bp.route("/<test_id>/sections", methods=["POST"])
 @token_required
 def add_section_to_test(test_id):
     """
     Create a Section and attach it to a Test.
-    Body: { "name": "...", "description": "...", "instructions": "...", "time_restricted": true|false }
+    Body: {
+      "name": "...",
+      "description": "...",
+      "instructions": "...",
+      "time_restricted": true|false,
+      "duration": 30   # minutes, required when time_restricted=true
+    }
     """
     data = request.get_json() or {}
     name = data.get("name")
@@ -54,7 +61,21 @@ def add_section_to_test(test_id):
 
     time_restricted = bool(data.get("time_restricted", False))
     description = data.get("description", "")
-    instructions = data.get("instructions", "")  # new
+    instructions = data.get("instructions", "")
+
+    # parse duration if provided
+    duration = data.get("duration", None)
+    if duration is not None:
+        try:
+            duration = int(duration)
+        except (ValueError, TypeError):
+            return response(False, "Field 'duration' must be an integer (minutes)"), 400
+        if duration < 0:
+            return response(False, "Field 'duration' must be >= 0"), 400
+
+    # if time_restricted, duration must be positive
+    if time_restricted and (duration is None or duration <= 0):
+        return response(False, "A positive 'duration' (minutes) is required when time_restricted is true"), 400
 
     # ensure test exists
     try:
@@ -66,8 +87,9 @@ def add_section_to_test(test_id):
     section = Section(
         name=name,
         description=description,
-        instructions=instructions,      # new
-        time_restricted=time_restricted
+        instructions=instructions,
+        time_restricted=time_restricted,
+        duration=(duration or 0)
     )
     try:
         section.save()
@@ -98,7 +120,7 @@ def add_section_to_test(test_id):
 @token_required
 def update_section(section_id):
     """
-    Update a Section. Body may include: name, description, instructions, time_restricted
+    Update a Section. Body may include: name, description, instructions, time_restricted, duration.
     If time_restricted flips, move references on Tests accordingly.
     """
     data = request.get_json() or {}
@@ -114,19 +136,39 @@ def update_section(section_id):
         section.name = data["name"]
         updated = True
     if "description" in data:
-        # allow empty string
         section.description = data["description"] or ""
         updated = True
     if "instructions" in data:
-        # allow empty string (clear instructions)
         section.instructions = data["instructions"] or ""
         updated = True
     if "time_restricted" in data:
         section.time_restricted = bool(data["time_restricted"])
         updated = True
 
+    # duration handling: validate if provided
+    if "duration" in data:
+        dur_raw = data["duration"]
+        # allow null/empty to mean 0
+        if dur_raw is None or (isinstance(dur_raw, str) and dur_raw.strip() == ""):
+            duration = 0
+        else:
+            try:
+                duration = int(dur_raw)
+            except (ValueError, TypeError):
+                return response(False, "Field 'duration' must be an integer (minutes)"), 400
+            if duration < 0:
+                return response(False, "Field 'duration' must be >= 0"), 400
+        section.duration = duration
+        updated = True
+
     if not updated:
         return response(False, "No valid fields provided to update"), 400
+
+    # If changing to time_restricted=True, ensure a positive duration exists (either provided just now or existing)
+    new_time_restricted = bool(section.time_restricted)
+    if new_time_restricted and (section.duration is None or int(section.duration) <= 0):
+        # If the request included duration but it was invalid, we'd already have returned. Here check if missing.
+        return response(False, "Cannot enable time_restricted without a positive 'duration' (minutes)"), 400
 
     try:
         section.save()
@@ -134,16 +176,13 @@ def update_section(section_id):
         return response(False, f"Error updating section: {str(e)}"), 400
 
     # If time_restricted changed, move references in Tests
-    new_time_restricted = bool(section.time_restricted)
     if old_time_restricted != new_time_restricted:
         try:
             if old_time_restricted:
                 # was in time_restricted list, move to open
                 tests_with_old = Test.objects(sections_time_restricted=section)
                 for t in tests_with_old:
-                    # remove from time_restricted
                     t.update(pull__sections_time_restricted=section)
-                    # add to open (avoid duplicates)
                     t.update(push__sections_open=section)
             else:
                 # was in open list, move to time_restricted
@@ -156,7 +195,6 @@ def update_section(section_id):
             return response(False, f"Section updated but failed to move references: {str(e)}"), 500
 
     return response(True, "Section updated", section.to_json()), 200
-
 
 # GET /tests/<test_id>/sections
 @test_bp.route("/<test_id>/sections", methods=["GET"])
@@ -229,7 +267,7 @@ def get_questions_by_section(section_id):
         elif q_type == "coding":
             try:
                 if sq.coding_ref:
-                    q_obj = sq.coding_ref.to_json()
+                    q_obj = sq.coding_ref.to_safe_json()
             except DoesNotExist:
                 q_obj = {"missing": True, "note": "Referenced coding question not found"}
         elif q_type == "rearrange":

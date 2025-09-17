@@ -42,6 +42,8 @@ from routes.faculty_admin.questions.rearrange import rearrange_bp as college_rea
 from routes.faculty_admin.v1.questions.coding import coding_bp as generic_coding_bp
 from routes.faculty_admin.v1.questions.rearrange import rearrange_bp as generic_rearrange_bp
 from routes.faculty_admin.v1.questions.mcq import generic_bp as generic_mcq_bp
+
+from routes.faculty_admin.test.attempt_test import assign_bp as test_assign_bp
 # Load environment variables
 load_dotenv()
 
@@ -67,7 +69,7 @@ def create_app():
     app.register_blueprint(course_rearrange_bp, url_prefix="/course-rearranges")
     app.register_blueprint(course_coding_q_bp, url_prefix="/course-coding-questions")
     app.register_blueprint(coding_bp,url_prefix="/coding/questions")
-
+    app.register_blueprint(test_assign_bp)
 
 
     

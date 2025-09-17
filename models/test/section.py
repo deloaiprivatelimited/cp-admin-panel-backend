@@ -35,6 +35,7 @@ class Section(Document):
     time_restricted = BooleanField(default=False, required=True)
 
     questions = ListField(EmbeddedDocumentField(SectionQuestion), default=list)
+    duration = IntField(default=0, min_value=0)
 
     created_at = DateTimeField(default=datetime.utcnow)
     updated_at = DateTimeField(default=datetime.utcnow)
@@ -51,6 +52,8 @@ class Section(Document):
             "name": self.name,
             "description": self.description or "",
             "instructions": self.instructions or "",
+                        "duration": int(self.duration) if self.duration is not None else 0,
+"no_of_questions": len(self.questions),
             "time_restricted": self.time_restricted,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,

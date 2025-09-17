@@ -83,4 +83,5 @@ class Test(Document):
             "start_datetime": self.start_datetime.isoformat() if self.start_datetime else None,
             "end_datetime": self.end_datetime.isoformat() if self.end_datetime else None,
             "total_sections": len(self.sections_time_restricted or []) + len(self.sections_open or []),
+            "no_of_students" : 0
         }

@@ -11,41 +11,6 @@ from models.questions.mcq import MCQ, MCQConfig
 mcq_bp = Blueprint("mcq", __name__, url_prefix="/test/questions/mcqs")
 
 
-def mcq_minimal_to_json(mcq: MCQ) -> dict:
-    """
-    Minimal representation used by list endpoints.
-    NOTE: images are intentionally excluded from this minimal view.
-    """
-    options_json = []
-    for o in mcq.options or []:
-        options_json.append({
-            "id": o.option_id,
-            "text": o.value,
-            "is_correct": o.option_id in (mcq.correct_options or [])
-        })
-
-    created_by = mcq.created_by or {}
-    created_by_min = {
-        "id": created_by.get("id"),
-        "name": created_by.get("name")
-    } if created_by else {}
-
-    return {
-        "id": str(mcq.id),
-        "title": mcq.title,
-        "question": mcq.question_text,
-        "difficulty_level": mcq.difficulty_level,
-        "topic": mcq.topic,
-        "subtopic": mcq.subtopic,
-        "tags": mcq.tags or [],
-        "marks": mcq.marks,
-        "negative_marks": getattr(mcq, "negative_marks", None),
-        "time_limit": mcq.time_limit,
-        "is_multiple": bool(mcq.is_multiple),
-        "options": options_json,  # images omitted intentionally
-        "created_by": created_by_min,
-    }
-
 
 @mcq_bp.route("/", methods=["GET"])
 @token_required
@@ -158,7 +123,7 @@ def list_mcqs():
 
         total_pages = ceil(total / per_page) if per_page else 1
 
-        items_json = [mcq_minimal_to_json(m) for m in items]
+        items_json = [m.to_json() for m in items]
 
         # meta: try to use MCQConfig document if available for canonical lists
         config = None
