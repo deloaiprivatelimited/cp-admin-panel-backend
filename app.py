@@ -37,7 +37,7 @@ from routes.faculty_admin.test.college_question.rearrange  import rearrange_bp a
 from routes.faculty_admin.questions.coding import coding_q_bp as college_coding_q_bp
 from routes.faculty_admin.questions.mcq import mcq_bp as college_mcq_bp
 from routes.faculty_admin.questions.rearrange import rearrange_bp as college_rearrange_bp
-
+from routes.faculty_admin.questions_test.mcq import mcq_bp as test_edit_mcq
 
 from routes.faculty_admin.v1.questions.coding import coding_bp as generic_coding_bp
 from routes.faculty_admin.v1.questions.rearrange import rearrange_bp as generic_rearrange_bp
@@ -89,6 +89,7 @@ def create_app():
     app.register_blueprint(college_coding_q_bp, url_prefix="/college-coding-questions")
     app.register_blueprint(college_mcq_bp, url_prefix="/college-mcqs")
     app.register_blueprint(college_rearrange_bp, url_prefix="/college-rearranges")
+    app.register_blueprint(test_edit_mcq, url_prefix="/test-mcqs")
 
     app.register_blueprint(generic_mcq_bp)
     app.register_blueprint(generic_rearrange_bp)

@@ -39,6 +39,26 @@ def token_required(f):
         return f(*args, **kwargs)
 
     return decorated
+
+
+def parse_bool(val, default=False):
+    """Utility to parse boolean-ish values from JSON payloads.
+    Accepts actual bools, numbers (0/1), and strings "true"/"false","1","0","yes","no".
+    """
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return bool(val)
+    s = str(val).strip().lower()
+    if s in ("true", "1", "yes", "y", "t"):
+        return True
+    if s in ("false", "0", "no", "n", "f", ""):
+        return False
+    # fallback
+    return default
+
 # POST /tests/<test_id>/sections
 # POST /<test_id>/sections
 @test_bp.route("/<test_id>/sections", methods=["POST"])
@@ -62,6 +82,9 @@ def add_section_to_test(test_id):
     time_restricted = bool(data.get("time_restricted", False))
     description = data.get("description", "")
     instructions = data.get("instructions", "")
+# new boolean fields (default False)
+    is_shuffle_question = parse_bool(data.get("is_shuffle_question", False))
+    is_shuffle_options = parse_bool(data.get("is_shuffle_options", False))
 
     # parse duration if provided
     duration = data.get("duration", None)
@@ -89,7 +112,9 @@ def add_section_to_test(test_id):
         description=description,
         instructions=instructions,
         time_restricted=time_restricted,
-        duration=(duration or 0)
+        duration=(duration or 0),
+        is_shuffle_question=is_shuffle_question,
+        is_shuffle_options=is_shuffle_options
     )
     try:
         section.save()
@@ -144,7 +169,13 @@ def update_section(section_id):
     if "time_restricted" in data:
         section.time_restricted = bool(data["time_restricted"])
         updated = True
-
+ # new shuffle flags
+    if "is_shuffle_question" in data:
+        section.is_shuffle_question = parse_bool(data.get("is_shuffle_question"), default=bool(section.is_shuffle_question))
+        updated = True
+    if "is_shuffle_options" in data:
+        section.is_shuffle_options = parse_bool(data.get("is_shuffle_options"), default=bool(section.is_shuffle_options))
+        updated = True
     # duration handling: validate if provided
     if "duration" in data:
         dur_raw = data["duration"]
