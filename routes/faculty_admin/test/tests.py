@@ -88,6 +88,7 @@ def token_required(f):
             return response(False, str(e)), 401
 
         request.token_payload = payload
+        request.admin = payload
         return f(*args, **kwargs)
 
     return decorated
@@ -135,6 +136,20 @@ def _paginate_and_respond(qs, page, per_page, sort=None):
     tests = [t.to_minimal_json() for t in qs]
     meta = {"total": total, "page": page, "per_page": per_page, "total_pages": total_pages}
     return response(True, "OK", data={"tests": tests, "meta": meta}), 200
+# ---------- helpers ----------
+def _get_admin_college_id():
+    # print(admin_payload)
+    admin_payload = getattr(request, "admin", {}) or {}
+    print(admin_payload)
+    return admin_payload.get("college_id")
+
+def _ensure_same_college_or_forbid(obj_college_id):
+    admin_college_id = _get_admin_college_id()
+    if admin_college_id is None:
+        return response(False, "Forbidden: admin has no college_id"), 403
+    if str(admin_college_id) != str(obj_college_id):
+        return response(False, "Forbidden: resource does not belong to your college"), 403
+    return None
 
 
 @test_bp.route("/add", methods=["POST"])
@@ -202,6 +217,10 @@ def add_test():
         "id": payload.get("admin_id", "system"),
         "name": payload.get("role", "college_admin"),
     }
+    # ✅ Fetch college_id from admin token or request
+    college_id = payload.get("college_id") or _get_admin_college_id()
+    if not college_id:
+        return response(False, "college_id is required"), 400
 
     # Build kwargs to pass to Test - omit duration_seconds if frontend didn't provide it so model uses default
     test_kwargs = dict(
@@ -213,6 +232,8 @@ def add_test():
         notes=data.get("notes"),  # NEW: store separate notes
         tags=data.get("tags", []),
         created_by=created_by,
+                college=str(college_id),   # ✅ Added
+
     )
     if duration_seconds is not None:
         test_kwargs["duration_seconds"] = duration_seconds
@@ -255,6 +276,7 @@ def add_test():
     return response(True, "Test created successfully", data=test_json), 201
 
 
+
 # bind same function to multiple routes
 @test_bp.route("", methods=["GET"])
 @test_bp.route("/past", methods=["GET"])
@@ -266,10 +288,18 @@ def get_tests_merged():
     GET /tests, /tests/past, /tests/ongoing, /tests/upcoming
     Same query params as before (q, page, per_page, sort). If a `when` query param
     is present it overrides the path-derived mode.
+
+    This version enforces college scoping: admins only see tests that belong to their college.
     """
     page, per_page, err = _parse_pagination_args()
     if err:
         return response(False, err), 400
+
+    # fetch admin college and require it
+    admin_college_id = _get_admin_college_id()
+    if admin_college_id is None:
+        return response(False, "Forbidden: admin has no college_id"), 403
+    college_filter = {"college": str(admin_college_id)}
 
     # mode precedence: explicit ?when=... else derived from the path
     when = request.args.get("when")
@@ -288,16 +318,16 @@ def get_tests_merged():
 
     now = datetime.utcnow()
     if when == "all":
-        qs = Test.objects
+        qs = Test.objects(**college_filter)
         default_sort = None
     elif when == "past":
-        qs = Test.objects(end_datetime__lt=now)
+        qs = Test.objects(end_datetime__lt=now, **college_filter)
         default_sort = "-end_datetime"
     elif when == "ongoing":
-        qs = Test.objects(start_datetime__lte=now, end_datetime__gte=now)
+        qs = Test.objects(start_datetime__lte=now, end_datetime__gte=now, **college_filter)
         default_sort = "start_datetime"
     elif when == "upcoming":
-        qs = Test.objects(start_datetime__gt=now)
+        qs = Test.objects(start_datetime__gt=now, **college_filter)
         default_sort = "start_datetime"
     else:
         return response(False, f"invalid 'when' value: {when}"), 400
@@ -305,20 +335,41 @@ def get_tests_merged():
     qs = _apply_search(qs)
     sort = request.args.get("sort") or default_sort
     return _paginate_and_respond(qs, page, per_page, sort)
-
-
 # GET /tests/<id>
 @test_bp.route("/<test_id>", methods=["GET"])
 @token_required
 def get_test(test_id):
     """
     GET /tests/<test_id>
+    Validates ID, enforces college scoping, returns test.to_json()
     """
+    # validate ObjectId-ish string early to avoid weird mongoengine errors
+    try:
+        # allow both ObjectId and string ids; ObjectId() will raise if invalid format
+        ObjectId(str(test_id))
+    except Exception:
+        return response(False, "Test not found"), 404
+
     try:
         test = Test.objects.get(id=test_id)
     except (DoesNotExist, ValidationError):
         return response(False, "Test not found"), 404
-    return response(True, "Test fetched", test.to_json()), 200
+
+    # enforce that admin belongs to same college as the test
+    ensure_err = _ensure_same_college_or_forbid(getattr(test, "college", None))
+    if ensure_err is not None:
+        return ensure_err
+
+    # include human-readable duration_hms like other endpoints expect
+    result = test.to_json()
+    try:
+        result["duration_hms"] = (
+            str(timedelta(seconds=int(test.duration_seconds))) if getattr(test, "duration_seconds", None) is not None else None
+        )
+    except Exception:
+        result["duration_hms"] = None
+
+    return response(True, "Test fetched", result), 200
 
 
 # PUT /tests/<id>

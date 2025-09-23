@@ -159,6 +159,45 @@ class BaseQuestion(Document):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
+        # ------------------------
+    # Student-facing JSON (minimal)
+    # ------------------------
+    def to_student_test_json(self, include_limits: bool = False):
+        """
+        Return a minimal JSON-friendly dict for presenting to students.
+        Excludes internal/sensitive fields like solution_code, testcase_groups, authors,
+        attempt_policy, timestamps, published, show_solution, and version.
+        """
+        sample_io_list = [
+            {
+                "input_text": s.input_text,
+                "output": s.output,
+                "explanation": s.explanation,
+            }
+            for s in (self.sample_io or [])
+        ]
+
+        base = {
+            "id": str(self.id),
+            "title": self.title,
+            "short_description": self.short_description,
+            "long_description_markdown": self.long_description_markdown,
+            "topic": self.topic,
+            "subtopic": self.subtopic,
+            "tags": self.tags or [],
+            "sample_io": sample_io_list,
+            "allowed_languages": self.allowed_languages or [],
+            "predefined_boilerplates": self.predefined_boilerplates or {},
+            "run_code_enabled": bool(self.run_code_enabled),
+            "submission_enabled": bool(self.submission_enabled),
+        }
+
+        if include_limits:
+            base["time_limit_ms"] = self.time_limit_ms
+            base["memory_limit_kb"] = self.memory_limit_kb
+
+        return base
+
 
 class Question(BaseQuestion):
      meta = {
@@ -228,7 +267,7 @@ class SubmissionCaseResult(EmbeddedDocument):
 # Submission document
 class Submission(Document):
     question_id = StringField(required=True)
-    collection = StringField(choices=("questions", "course_questions"), default="questions")
+    collection = StringField(choices=("questions", "course_questions", "college_questions","test_questions"), default="questions")
     user_id = StringField(required=True)  # store only the user id from JWT
     language = StringField(required=True)
     source_code = StringField(required=True)

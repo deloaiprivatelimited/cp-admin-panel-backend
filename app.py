@@ -16,6 +16,7 @@ from routes.course.mcq import course_mcq_bp
 from routes.course.rearrange import course_rearrange_bp
 from routes.course.coding import course_coding_q_bp
 from routes.coding.coding_question import bp as coding_bp
+from routes.coding.test_coding_question import bp as test_coding_submit_bp
 
 from routes.faculty_admin.test.tests import test_bp
 from routes.faculty_admin.college_admin import collegeadmin_bp
@@ -44,6 +45,9 @@ from routes.faculty_admin.v1.questions.rearrange import rearrange_bp as generic_
 from routes.faculty_admin.v1.questions.mcq import generic_bp as generic_mcq_bp
 
 from routes.faculty_admin.test.attempt_test import assign_bp as test_assign_bp
+
+from routes.students.student_basic import student_bp as student_basic_bp
+from routes.students.test.test import student_test_bp 
 # Load environment variables
 load_dotenv()
 
@@ -81,6 +85,7 @@ def create_app():
     app.register_blueprint(test_mcq_bp)
     app.register_blueprint(test_rearrange_bp)
     app.register_blueprint(test_coding_bp)
+    app.register_blueprint(test_coding_submit_bp,url_prefix="/coding/questions/test/submit")
 
     app.register_blueprint(test_college_mcq_bp)
     app.register_blueprint(test_college_rearrange_bp)
@@ -94,6 +99,9 @@ def create_app():
     app.register_blueprint(generic_mcq_bp)
     app.register_blueprint(generic_rearrange_bp)
     app.register_blueprint(generic_coding_bp)
+
+    app.register_blueprint(student_basic_bp)
+    app.register_blueprint(student_test_bp)
 
     @app.route("/")
     def home():

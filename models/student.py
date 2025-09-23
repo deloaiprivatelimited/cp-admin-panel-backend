@@ -54,6 +54,7 @@ class Student(Document):
         return f"{self.usn or 'N/A'} - {self.name}"
 
     def set_password(self, password: str):
+        print(password)
         self.password_hash = generate_password_hash(password)
 
     def check_password(self, password: str) -> bool:

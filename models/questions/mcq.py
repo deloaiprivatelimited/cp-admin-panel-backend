@@ -135,6 +135,34 @@ class BaseMCQ(Document):
             # Don't fail saving the MCQ if config update has an issue; raise if you prefer strict behavior
             pass
         return result
+    # ------------------------
+    # JSON for student test (minimal)
+    # ------------------------
+    def to_student_test_json(self):
+        def img_to_dict(img):
+            return {
+                "image_id": img.image_id,
+                "label": img.label,
+                "url": img.url,
+                "alt_text": img.alt_text,
+                "metadata": img.metadata,
+            }
+
+        return {
+            "id": str(self.id),
+            "title": self.title,
+            "question_text": self.question_text,
+            "question_images": [img_to_dict(i) for i in (self.question_images or [])],
+            "options": [
+                {
+                    "option_id": o.option_id,   # keep for answer mapping
+                    "value": o.value,
+                    "images": [img_to_dict(ii) for ii in (o.images or [])],
+                }
+                for o in (self.options or [])
+            ],
+            "is_multiple": self.is_multiple,
+        }
 
     # ------------------------
     # JSON serialization helper

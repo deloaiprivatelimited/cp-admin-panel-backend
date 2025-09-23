@@ -26,7 +26,7 @@ from mongoengine.errors import DoesNotExist, ValidationError
 # Import the Document classes from your models module
 from models.questions.coding import Question, CourseQuestion, CollegeQuestion,TestQuestion
 
-bp = Blueprint('questions', __name__)
+bp = Blueprint('test_coding_questions', __name__)
 
 
 def _serialize_question(q):
@@ -987,6 +987,122 @@ def my_submissions(collection, question_id):
     return jsonify({
         "page": page,
         "per_page": per_page,
+        "total": total,
+        "items": items
+    }), 200
+
+
+# GET /<collection>/<question_id>/my-submissions
+@bp.route('/<collection>/<question_id>/my-test-submissions', methods=['GET'])
+def my_submissions_test(collection, question_id):
+    """
+    Return only the authenticated user's submissions for a given question.
+    - Auth: Authorization: Bearer <token>
+    - Query params:
+        submission_ids (comma-separated list of submission IDs to fetch; required)
+        include_case_details (true/false, default=true)
+    - Never returns judge_token or testcase IDs.
+    - If submission_ids is missing or empty, returns an empty list.
+    """
+    # query params
+    submission_ids_param = request.args.get("submission_ids")
+    submission_ids = []
+    if submission_ids_param:
+        submission_ids = [sid.strip() for sid in submission_ids_param.split(",") if sid.strip()]
+
+    include_case_details = request.args.get('include_case_details', 'true').lower() not in ('0', 'false', 'no')
+
+    # auth
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return jsonify({"error": "Authorization required"}), 401
+    token = auth_header.split(" ", 1)[1]
+    try:
+        payload = verify_access_token(token)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 401
+
+    user_id = payload.get("sub") or payload.get("id") or payload.get("student_id")
+    if not user_id:
+        return jsonify({"error": "Invalid token payload"}), 401
+
+    # pick question model
+    Model = _model_for_collection(collection)
+    if Model is None:
+        abort(404, description='Invalid collection')
+
+    # ensure question exists
+    try:
+        q = Model.objects.get(id=question_id)
+    except (DoesNotExist, ValidationError):
+        abort(404, description='Question not found')
+
+    # if no submission_ids → always return empty
+    if not submission_ids:
+        return jsonify({
+            "page": None,
+            "per_page": None,
+            "total": 0,
+            "items": []
+        }), 200
+
+    # base query
+    query = {
+        "question_id": str(q.id),
+        "collection": collection,
+        "user_id": str(user_id),
+    }
+
+    # filter only requested submissions
+    submissions_qs = Submission.objects(__raw__=query).filter(id__in=submission_ids)
+    total = submissions_qs.count()
+    submissions = submissions_qs.order_by("-created_at")
+
+    def _case_summary_from_cr(cr, idx):
+        passed = False
+        try:
+            if isinstance(cr.status, dict):
+                st_id = cr.status.get("id")
+                passed = (st_id == 3) or (str(cr.status.get("description", "")).lower().startswith("accepted"))
+            else:
+                passed = str(cr.status).lower().find("accepted") != -1
+        except Exception:
+            passed = False
+
+        return {
+            "name": f"Testcase {idx + 1}",
+            "passed": bool(passed),
+            "points_awarded": int(getattr(cr, "points_awarded", 0) or 0),
+            "time": getattr(cr, "time", None),
+            "memory": getattr(cr, "memory", None),
+        }
+
+    items = []
+    for sub in submissions:
+        case_results = getattr(sub, "case_results", []) or []
+        cases = []
+        if include_case_details:
+            for idx, cr in enumerate(case_results):
+                cases.append(_case_summary_from_cr(cr, idx))
+
+        item = {
+            "submission_id": str(sub.id),
+            "question_id": str(sub.question_id),
+            "language": sub.language,
+            "source_code": sub.source_code,
+            "verdict": getattr(sub, "verdict", None),
+            "total_score": int(getattr(sub, "total_score", 0) or 0),
+            "max_score": int(getattr(sub, "max_score", 0) or 0),
+            "created_at": sub.created_at.isoformat() if getattr(sub, "created_at", None) else None,
+        }
+        if include_case_details:
+            item["cases"] = cases
+
+        items.append(item)
+
+    return jsonify({
+        "page": None,
+        "per_page": None,
         "total": total,
         "items": items
     }), 200

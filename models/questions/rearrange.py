@@ -177,6 +177,41 @@ class BaseRearrange(Document):
             "subtopic": self.subtopic,
             "created_by": self.created_by,
         }
+        # ------------------------
+    # Student-facing JSON (minimal)
+    # ------------------------
+    def to_student_test_json(self):
+        """
+        Minimal student-facing JSON for rearrange questions.
+        Exposes only id, title, prompt, question_images and items (with images).
+        Does NOT include correct_order, marks, explanation, time_limit, created_by, etc.
+        """
+        def img_to_dict(img):
+            return {
+                "image_id": img.image_id,
+                "label": img.label,
+                "url": img.url,
+                "alt_text": img.alt_text,
+                "metadata": img.metadata,
+            }
+
+        return {
+            "id": str(self.id),
+            "title": self.title,
+            "prompt": self.prompt,
+            # include question-level images so frontends can render any diagrams
+            "question_images": [img_to_dict(i) for i in (self.question_images or [])],
+            # items (keep item_id so student answers can be mapped to stored items)
+            "items": [
+                {
+                    "item_id": it.item_id,
+                    "value": it.value,
+                    "images": [img_to_dict(ii) for ii in (it.images or [])],
+                }
+                for it in (self.items or [])
+            ],
+        }
+
 
 
 # ------------------------

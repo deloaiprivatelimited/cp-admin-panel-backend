@@ -729,7 +729,7 @@ def change_password(student_id):
     
     try:
         student.set_password(new_password)
-        student.first_time_login = False
+        student.first_time_login = True
         student.save()
         return jsonify({"success": True, "message": "Password changed and first_time_login cleared."}), 200
     except ValidationError as e:
