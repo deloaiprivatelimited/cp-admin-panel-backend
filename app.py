@@ -45,7 +45,7 @@ from routes.faculty_admin.v1.questions.rearrange import rearrange_bp as generic_
 from routes.faculty_admin.v1.questions.mcq import generic_bp as generic_mcq_bp
 
 from routes.faculty_admin.test.attempt_test import assign_bp as test_assign_bp
-
+from routes.faculty_admin.test.test_result import faculty_test_result_bp
 from routes.students.student_basic import student_bp as student_basic_bp
 from routes.students.test.test import student_test_bp 
 # Load environment variables
@@ -74,6 +74,7 @@ def create_app():
     app.register_blueprint(course_coding_q_bp, url_prefix="/course-coding-questions")
     app.register_blueprint(coding_bp,url_prefix="/coding/questions")
     app.register_blueprint(test_assign_bp)
+    app.register_blueprint(faculty_test_result_bp)
 
 
     

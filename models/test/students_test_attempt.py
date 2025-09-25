@@ -16,6 +16,9 @@ class MCQSnapshot(EmbeddedDocument):
     is_multiple = BooleanField(default=False)
     marks = FloatField(default=0.0)
     negative_marks = FloatField(default=0.0)
+    # New fields requested:
+    correct_options = ListField(StringField(), default=list)  # store correct option ids
+    explanation = StringField()  # explanation for the MCQ (if present)
 
 class CodingSnapshot(EmbeddedDocument):
     """Snapshot for coding question."""
@@ -40,6 +43,9 @@ class RearrangeSnapshot(EmbeddedDocument):
     is_drag_and_drop = BooleanField(default=True)
     marks = FloatField(default=0.0)
     negative_marks = FloatField(default=0.0)
+    # New fields requested:
+    correct_order = ListField(StringField(), default=list)  # store correct order of item_ids
+    explanation = StringField()  # explanation for rearrange question (if present)
 
 # Student answer with snapshot and marks_obtained -------------------
 class StudentAnswer(EmbeddedDocument):
@@ -60,9 +66,17 @@ class StudentAnswer(EmbeddedDocument):
 # Section answers grouping ----------------------------------------
 class SectionAnswers(EmbeddedDocument):
     section_id = StringField(required=True)
+    # New snapshot fields on section wrapper:
+    section_name = StringField()            # store section name at autosave time
+    section_duration = IntField(default=0)  # store section duration (seconds or minutes as your app uses)
     answers = ListField(EmbeddedDocumentField(StudentAnswer), default=list)
 
+    # NEW: section-level marks snapshot
+    section_max_marks = FloatField(default=0.0)    # maximum possible marks for this section (from question snapshots)
+    section_total_marks = FloatField(default=0.0)  # marks obtained so far in this section (sum of marks_obtained)
+
 # StudentTestAttempt with timed/open lists -------------------------
+
 class StudentTestAttempt(Document):
     student_id = StringField(required=True)
     test_id = StringField(required=True)
@@ -70,7 +84,17 @@ class StudentTestAttempt(Document):
 
     timed_section_answers = ListField(EmbeddedDocumentField(SectionAnswers), default=list)
     open_section_answers = ListField(EmbeddedDocumentField(SectionAnswers), default=list)
+
+    # total marks obtained (kept from before)
     total_marks = FloatField(default=0.0)
+     # ---------------- NEW FIELDS ----------------
+    tab_switches_count = IntField(default=0)          # number of times student switched tab
+    fullscreen_violated = BooleanField(default=False) # true if fullscreen violation detected
+    # --------------------------------------------
+
+
+    # NEW: maximum marks for the entire test (sum of section_max_marks)
+    max_marks = FloatField(default=0.0)
 
     last_autosave = DateTimeField(default=datetime.utcnow)
     submitted = BooleanField(default=False)
@@ -161,57 +185,187 @@ class StudentTestAttempt(Document):
                     total += ans.marks_obtained
         return total
 
+    def max_marks_possible(self) -> float:
+        """
+        Compute the maximum possible marks for this attempt,
+        based on the question snapshots in all sections.
+
+        Returns:
+            float: sum of marks from each question snapshot (mcq/coding/rearrange).
+        """
+        total_max = 0.0
+
+        def section_max(sec_list):
+            nonlocal total_max
+            for sec in (sec_list or []):
+                for ans in (sec.answers or []):
+                    snap_marks = 0.0
+                    if getattr(ans, "snapshot_mcq", None):
+                        snap_marks = float(getattr(ans.snapshot_mcq, "marks", 0.0) or 0.0)
+                    elif getattr(ans, "snapshot_coding", None):
+                        snap_marks = float(getattr(ans.snapshot_coding, "marks", 0.0) or 0.0)
+                    elif getattr(ans, "snapshot_rearrange", None):
+                        snap_marks = float(getattr(ans.snapshot_rearrange, "marks", 0.0) or 0.0)
+                    total_max += snap_marks
+
+        section_max(self.timed_section_answers)
+        section_max(self.open_section_answers)
+
+        return total_max
+
     # ------------------------
     # Autosave: populate snapshots, compute MCQ marks, upsert answers
     # answers_dict format: { section_id: { question_id: {'value': [...], 'qwell': 'mcq' }, ... }, ... }
     # test_obj not strictly required but passing it helps avoid fetching sections repeatedly.
     # ------------------------
     def save_autosave(self, answers_dict: dict, test_obj=None):
+        """
+        Autosave that ensures the full test structure is stored section-wise:
+          - If test_obj provided, use it; otherwise fetch Test by self.test_id.
+          - Iterate every section in the test and ensure every question has a StudentAnswer
+            (snapshot + normalized value). Merge any incoming answers from answers_dict.
+        answers_dict format: { section_id: { question_id: {'value': [...], 'qwell': 'mcq' }, ... }, ... }
+        """
         from models.test.section import Section
         from models.questions.mcq import TestMCQ as MCQModel
         from models.questions.coding import TestQuestion as CodingModel
         from models.questions.rearrange import TestRearrange as RearrangeModel
+        from models.test.test import Test
 
-        for section_id, qmap in (answers_dict or {}).items():
-            # fetch section to determine time_restricted flag and to access question refs
-            section = Section.objects(id=section_id).first()
-            if not section:
-                # If section not found, skip (could log)
-                continue
+        # Resolve the test object (prefer provided test_obj)
+        try:
+            if test_obj is None and getattr(self, "test_id", None):
+                test_obj = Test.objects(id=str(self.test_id)).first()
+        except Exception:
+            test_obj = None
 
-            target_list = (self.timed_section_answers if section.time_restricted else self.open_section_answers)
+        # Build a mapping of section_id (string) -> Section document
+        section_map = {}
+
+        # 1) first include sections from the resolved test_obj (preferred source of truth)
+        if test_obj:
+            try:
+                for s in (test_obj.sections_time_restricted or []):
+                    if s is not None:
+                        section_map[str(s.id)] = s
+            except Exception:
+                pass
+            try:
+                for s in (test_obj.sections_open or []):
+                    if s is not None:
+                        section_map[str(s.id)] = s
+            except Exception:
+                pass
+
+        # 2) also include any section ids sent by frontend in answers_dict (in case client has cached/extra)
+        for sent_section_id in (answers_dict or {}).keys():
+            if str(sent_section_id) not in section_map:
+                try:
+                    sec = Section.objects(id=sent_section_id).first()
+                    if sec:
+                        section_map[str(sec.id)] = sec
+                    else:
+                        # keep None placeholder to still store client-sent questions in that wrapper
+                        section_map[str(sent_section_id)] = None
+                except Exception:
+                    section_map[str(sent_section_id)] = None
+
+        # Now iterate over every section key we gathered (union of test's sections + client sections)
+        for section_id, section in section_map.items():
+            # incoming payload map for that section (may be missing or empty)
+            incoming_map = (answers_dict or {}).get(section_id, {}) or {}
+
+            # choose correct target list (timed or open). If we don't have section doc, default to open list.
+            target_list = None
+            try:
+                if section and getattr(section, "time_restricted", False):
+                    target_list = self.timed_section_answers
+                else:
+                    target_list = self.open_section_answers
+            except Exception:
+                target_list = self.open_section_answers
 
             # find or create SectionAnswers wrapper
             sec_ans = next((s for s in target_list if s.section_id == str(section_id)), None)
             if not sec_ans:
-                sec_ans = SectionAnswers(section_id=str(section_id), answers=[])
+                # include section name & duration in the wrapper (new snapshot fields)
+                sec_ans = SectionAnswers(
+                    section_id=str(section_id),
+                    section_name=getattr(section, "name", None) if section else None,
+                    section_duration=int(getattr(section, "duration", 0) or 0),
+                    answers=[]
+                )
                 target_list.append(sec_ans)
+            else:
+                # update name/duration if we have a section doc (keep snapshot current)
+                try:
+                    if section:
+                        sec_ans.section_name = getattr(section, "name", sec_ans.section_name)
+                        sec_ans.section_duration = int(getattr(section, "duration", sec_ans.section_duration) or 0)
+                except Exception:
+                    pass
 
-            # iterate questions in that section payload
-            for qid, payload in (qmap or {}).items():
-                qwell = payload.get("qwell")
+            # Build the question list to ensure full coverage:
+            # - If we have a Section doc, use its questions (preferred).
+            # - Otherwise fallback to keys present in incoming_map only.
+            section_question_ids = []
+            if section:
+                for sq in (section.questions or []):
+                    qid = None
+                    try:
+                        if sq.question_type == "mcq" and getattr(sq, "mcq_ref", None):
+                            qid = str(sq.mcq_ref.id)
+                        elif sq.question_type == "coding" and getattr(sq, "coding_ref", None):
+                            qid = str(sq.coding_ref.id)
+                        elif sq.question_type == "rearrange" and getattr(sq, "rearrange_ref", None):
+                            qid = str(sq.rearrange_ref.id)
+                    except Exception:
+                        qid = None
+                    if qid:
+                        section_question_ids.append((qid, sq.question_type))
+            else:
+                # fallback: use whatever question ids the client sent under this section
+                for qid, payload in (incoming_map or {}).items():
+                    qwell = payload.get("qwell") or payload.get("question_type") or "unknown"
+                    section_question_ids.append((str(qid), qwell))
+
+            # Also include any client-sent questions that weren't present in the section doc
+            for qid, payload in (incoming_map or {}).items():
+                if str(qid) not in [x[0] for x in section_question_ids]:
+                    qwell = payload.get("qwell") or payload.get("question_type") or "unknown"
+                    section_question_ids.append((str(qid), qwell))
+
+            # Iterate each question id and upsert StudentAnswer with snapshot (if possible)
+            for qid, qwell in section_question_ids:
+                payload = incoming_map.get(qid, {}) or {}
                 raw_value = payload.get("value", None)
 
                 # find existing answer
                 existing = next((a for a in sec_ans.answers if a.question_id == str(qid)), None)
 
-                # --- MCQ handling (autosave + grading)
-                if qwell == "mcq":
-                    # find mcq reference inside the section (if available)
-                    mcq_ref = None
-                    try:
-                        for sq in (section.questions or []):
-                            if sq.question_type == "mcq" and sq.mcq_ref and str(sq.mcq_ref.id) == str(qid):
-                                mcq_ref = sq.mcq_ref
-                                break
-                    except Exception:
-                        mcq_ref = None
+                snapshot = None
+                marks_awarded = None
+                store_value = {}
 
-                    snapshot = None
-                    marks_awarded = None
+                # --- MCQ ---
+                if qwell == "mcq":
+                    mcq_ref = None
+                    if section:
+                        try:
+                            for sq in (section.questions or []):
+                                if sq.question_type == "mcq" and sq.mcq_ref and str(sq.mcq_ref.id) == str(qid):
+                                    mcq_ref = sq.mcq_ref
+                                    break
+                        except Exception:
+                            mcq_ref = None
+                    # if no mcq_ref from section, try to fetch MCQ directly
+                    if not mcq_ref:
+                        try:
+                            mcq_ref = MCQModel.objects(id=str(qid)).first()
+                        except Exception:
+                            mcq_ref = None
+
                     if mcq_ref:
-                        print('mcq')
-                        # build snapshot
                         snapshot = MCQSnapshot(
                             question_id=str(mcq_ref.id),
                             title=getattr(mcq_ref, "title", None),
@@ -220,8 +374,22 @@ class StudentTestAttempt(Document):
                             is_multiple=bool(mcq_ref.is_multiple),
                             marks=float(mcq_ref.marks or 0.0),
                             negative_marks=float(mcq_ref.negative_marks or 0.0),
+                            correct_options=list(mcq_ref.correct_options or []),
+                            explanation=getattr(mcq_ref, "explanation", None),
                         )
-                        # grade using the function above; raw_value might be list or dict depending on client
+
+                    # normalize value
+                    if isinstance(raw_value, list):
+                        store_value["value"] = raw_value
+                    elif isinstance(raw_value, dict) and "value" in raw_value:
+                        store_value["value"] = raw_value.get("value") or []
+                    elif isinstance(raw_value, str):
+                        store_value["value"] = [raw_value]
+                    else:
+                        store_value["value"] = raw_value if raw_value is not None else []
+
+                    # grade only if client gave an answer
+                    if mcq_ref and raw_value is not None:
                         selected = []
                         if isinstance(raw_value, list):
                             selected = raw_value
@@ -230,44 +398,39 @@ class StudentTestAttempt(Document):
                         elif isinstance(raw_value, str):
                             selected = [raw_value]
                         marks_awarded = float(self._grade_mcq(mcq_ref, selected))
-                        print(marks_awarded)
-
-                    # prepare value container for storage (normalize to {'value': [...]} for mcq)
-                    store_value = {}
-                    if isinstance(raw_value, list):
-                        store_value["value"] = raw_value
-                    elif isinstance(raw_value, dict) and "value" in raw_value:
-                        store_value["value"] = raw_value.get("value")
-                    else:
-                        store_value["value"] = raw_value if raw_value is not None else []
 
                     if existing:
                         existing.value = store_value
                         existing.snapshot_mcq = snapshot
-                        existing.marks_obtained = marks_awarded
+                        if marks_awarded is not None:
+                            existing.marks_obtained = marks_awarded
                     else:
                         ans = StudentAnswer(
                             question_id=str(qid),
                             question_type="mcq",
                             value=store_value,
                             snapshot_mcq=snapshot,
-                            marks_obtained=marks_awarded
+                            marks_obtained=marks_awarded,
                         )
                         sec_ans.answers.append(ans)
 
-                # --- Coding (snapshot only on autosave; grading deferred)
+                # --- Coding ---
                 elif qwell == "coding":
-                    # locate coding question ref if present on section
                     coding_ref = None
-                    try:
-                        for sq in (section.questions or []):
-                            if sq.question_type == "coding" and sq.coding_ref and str(sq.coding_ref.id) == str(qid):
-                                coding_ref = sq.coding_ref
-                                break
-                    except Exception:
-                        coding_ref = None
+                    if section:
+                        try:
+                            for sq in (section.questions or []):
+                                if sq.question_type == "coding" and sq.coding_ref and str(sq.coding_ref.id) == str(qid):
+                                    coding_ref = sq.coding_ref
+                                    break
+                        except Exception:
+                            coding_ref = None
+                    if not coding_ref:
+                        try:
+                            coding_ref = CodingModel.objects(id=str(qid)).first()
+                        except Exception:
+                            coding_ref = None
 
-                    snapshot = None
                     if coding_ref:
                         snapshot = CodingSnapshot(
                             question_id=str(coding_ref.id),
@@ -279,89 +442,72 @@ class StudentTestAttempt(Document):
                             predefined_boilerplates=coding_ref.predefined_boilerplates or {},
                             run_code_enabled=bool(getattr(coding_ref, "run_code_enabled", True)),
                             submission_enabled=bool(getattr(coding_ref, "submission_enabled", True)),
-                            marks=float(getattr(coding_ref, "marks", 0.0)),
+                            marks=float(getattr(coding_ref, "points", 0.0)),
                             negative_marks=float(getattr(coding_ref, "negative_marks", 0.0))
                         )
 
-                    # --- Normalize store_value:
-                    # Client may send:
-                    #   - a list of submission ids: ['id1','id2']
-                    #   - a single submission id string: 'id1'
-                    #   - a dict already: {'value': [...]} or {'submission_ids': [...]}
-                    store_value = {}
+                    # normalize
                     if isinstance(raw_value, list):
                         store_value["value"] = raw_value
                     elif isinstance(raw_value, dict):
-                        # keep "value" if present, else accept "submission_ids"
                         if "value" in raw_value:
                             store_value["value"] = raw_value.get("value") or []
                         elif "submission_ids" in raw_value:
                             store_value["value"] = raw_value.get("submission_ids") or []
                         else:
-                            # generic dict — store as-is under value key
                             store_value["value"] = raw_value
                     elif isinstance(raw_value, str):
                         store_value["value"] = [raw_value]
                     else:
                         store_value["value"] = []
 
-                    # --- Attempt to compute marks_awarded from submissions (autosave grade)
+                    # try autosave marks if submissions present
                     marks_awarded = None
                     try:
-                        # only try if we have a coding_ref and at least one submission id
                         sub_ids = store_value.get("value") or []
-                        # normalize to strings
                         sub_ids = [str(x) for x in sub_ids if x]
                         if coding_ref and sub_ids:
-                            from models.questions.coding import Submission  # import here to avoid circulars
-                            # fetch submissions that match these ids and belong to this user/question
+                            from models.questions.coding import Submission
                             subs = list(Submission.objects(id__in=sub_ids))
                             if subs:
-                                # choose best run by total_score (tie-breaker: latest updated_at)
                                 best = max(subs, key=lambda s: (float(getattr(s, "total_score", 0)), getattr(s, "updated_at", datetime.utcnow())))
-                                # Convert submission's numeric score to question marks:
-                                # - if submission.max_score present and >0, compute proportion
-                                # - otherwise, take min(best.total_score, coding_ref.marks)
                                 best_total = float(getattr(best, "total_score", 0) or 0.0)
-                                raw_marks = best_total
-
-                               
-
-                                print(raw_marks)
-                                marks_awarded = float(raw_marks)
+                                marks_awarded = float(best_total)
                     except Exception:
                         marks_awarded = None
 
-                    # upsert answer, keep existing.marks_obtained only if we couldn't compute a new one
                     if existing:
                         existing.value = store_value
                         existing.snapshot_coding = snapshot
                         if marks_awarded is not None:
                             existing.marks_obtained = marks_awarded
-                        # otherwise preserve previous marks (likely None)
                     else:
                         ans = StudentAnswer(
                             question_id=str(qid),
                             question_type="coding",
                             value=store_value,
                             snapshot_coding=snapshot,
-                            marks_obtained=marks_awarded
+                            marks_obtained=marks_awarded,
                         )
-                        sec_ans.answers.append(ans)   # --- Rearrange (snapshot only, marks left None)
-                                # --- Rearrange (snapshot + autosave grading)
-                elif qwell == "rearrange":
-                    print('rearrange')
-                    # locate rearrange question ref if present on section
-                    rearr_ref = None
-                    try:
-                        for sq in (section.questions or []):
-                            if sq.question_type == "rearrange" and sq.rearrange_ref and str(sq.rearrange_ref.id) == str(qid):
-                                rearr_ref = sq.rearrange_ref
-                                break
-                    except Exception:
-                        rearr_ref = None
+                        sec_ans.answers.append(ans)
 
-                    snapshot = None
+                # --- Rearrange ---
+                elif qwell == "rearrange":
+                    rearr_ref = None
+                    if section:
+                        try:
+                            for sq in (section.questions or []):
+                                if sq.question_type == "rearrange" and sq.rearrange_ref and str(sq.rearrange_ref.id) == str(qid):
+                                    rearr_ref = sq.rearrange_ref
+                                    break
+                        except Exception:
+                            rearr_ref = None
+                    if not rearr_ref:
+                        try:
+                            rearr_ref = RearrangeModel.objects(id=str(qid)).first()
+                        except Exception:
+                            rearr_ref = None
+
                     if rearr_ref:
                         snapshot = RearrangeSnapshot(
                             question_id=str(rearr_ref.id),
@@ -370,13 +516,13 @@ class StudentTestAttempt(Document):
                             items=[{"item_id": it.item_id, "value": it.value} for it in (rearr_ref.items or [])],
                             is_drag_and_drop=bool(getattr(rearr_ref, "is_drag_and_drop", True)),
                             marks=float(getattr(rearr_ref, "marks", 0.0)),
-                            negative_marks=float(getattr(rearr_ref, "negative_marks", 0.0))
+                            negative_marks=float(getattr(rearr_ref, "negative_marks", 0.0)),
+                            correct_order=list(getattr(rearr_ref, "correct_order", []) or []),
+                            explanation=getattr(rearr_ref, "explanation", None),
                         )
 
-                    # normalize value (list of item_ids) to {"value": [...]}
-                    store_value = {}
+                    # normalize
                     if isinstance(raw_value, list):
-                        # ensure all entries are strings (or as-is)
                         store_value["value"] = raw_value
                     elif isinstance(raw_value, dict) and "value" in raw_value:
                         val = raw_value.get("value")
@@ -391,37 +537,33 @@ class StudentTestAttempt(Document):
                     else:
                         store_value["value"] = []
 
-                    # compute marks_awarded if we have a rearr_ref and a student value
                     marks_awarded = None
                     try:
-                        if rearr_ref:
+                        if rearr_ref and raw_value is not None:
                             student_order = store_value.get("value") or []
                             marks_awarded = float(self._grade_rearrange(rearr_ref, student_order))
-                            print(marks_awarded)
                     except Exception:
                         marks_awarded = None
 
-                    # upsert answer, but only overwrite previous marks if we computed a mark
                     if existing:
                         existing.value = store_value
                         if snapshot is not None:
                             existing.snapshot_rearrange = snapshot
                         if marks_awarded is not None:
                             existing.marks_obtained = marks_awarded
-                        # otherwise preserve existing.marks_obtained
                     else:
                         ans = StudentAnswer(
                             question_id=str(qid),
                             question_type="rearrange",
                             value=store_value,
                             snapshot_rearrange=snapshot,
-                            marks_obtained=marks_awarded
+                            marks_obtained=marks_awarded,
                         )
                         sec_ans.answers.append(ans)
 
+                # --- fallback unknown question type ---
                 else:
-                    # unsupported qwell/type: store generically but no snapshot/grade
-                    store_value = {"value": raw_value}
+                    store_value = {"value": raw_value} if raw_value is not None else {"value": None}
                     if existing:
                         existing.value = store_value
                     else:
@@ -429,13 +571,13 @@ class StudentTestAttempt(Document):
                             question_id=str(qid),
                             question_type=qwell or "unknown",
                             value=store_value,
-                            marks_obtained=None
+                            marks_obtained=None,
                         )
                         sec_ans.answers.append(ans)
 
         # finished processing payload -> update timestamp and persist
         self.last_autosave = datetime.utcnow()
         self.total_marks = self.total_marks_obtained()
-
+        self.max_marks = self.max_marks_possible()
         self.save()
         return True

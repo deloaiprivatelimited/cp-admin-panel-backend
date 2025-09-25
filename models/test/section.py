@@ -199,3 +199,31 @@ class Section(Document):
 
         result["questions"] = q_wrappers
         return result
+    
+    def delete(self, cascade: bool = False, *args, **kwargs):
+        # If you know questions are unique to this section, just delete them.
+        try:
+            mcq_ids = []
+            coding_ids = []
+            rearrange_ids = []
+
+            for sq in (self.questions or []):
+                if sq.question_type == "mcq" and getattr(sq, "mcq_ref", None):
+                    mcq_ids.append(sq.mcq_ref.id)
+                elif sq.question_type == "coding" and getattr(sq, "coding_ref", None):
+                    coding_ids.append(sq.coding_ref.id)
+                elif sq.question_type == "rearrange" and getattr(sq, "rearrange_ref", None):
+                    rearrange_ids.append(sq.rearrange_ref.id)
+
+            # Bulk delete by id (faster)
+            if mcq_ids:
+                MCQ.objects(id__in=mcq_ids).delete()
+            if coding_ids:
+                Question.objects(id__in=coding_ids).delete()
+            if rearrange_ids:
+                Rearrange.objects(id__in=rearrange_ids).delete()
+
+        except Exception as e:
+            print(f"[Section.delete] error deleting referenced questions: {e}")
+
+        return super(Section, self).delete(*args, **kwargs)

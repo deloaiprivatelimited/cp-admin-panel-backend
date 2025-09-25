@@ -315,3 +315,30 @@ def get_questions_by_section(section_id):
             })
 
     return response(True, "Questions fetched", questions_data), 200
+
+
+# DELETE /sections/<section_id>
+@test_bp.route("/sections/<section_id>", methods=["DELETE"])
+@token_required
+def delete_section(section_id):
+    """
+    Delete a Section by ID.
+    - Removes it from any Tests it is attached to.
+    - Deletes the Section itself (and cascades to its questions).
+    """
+    try:
+        section = Section.objects.get(id=section_id)
+    except (DoesNotExist, ValidationError):
+        return response(False, "Section not found"), 404
+
+    try:
+        # Remove section reference from all tests
+        Test.objects(sections_time_restricted=section).update(pull__sections_time_restricted=section)
+        Test.objects(sections_open=section).update(pull__sections_open=section)
+
+        # Delete section (your model already cascades question deletions)
+        section.delete(cascade=True)
+    except Exception as e:
+        return response(False, f"Error deleting section: {str(e)}"), 500
+
+    return response(True, "Section deleted successfully"), 200
