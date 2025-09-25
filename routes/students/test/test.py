@@ -262,6 +262,7 @@ def submit_test():
 @student_test_bp.route("/test/tab-switch", methods=["POST"])
 @token_required
 def route_tab_switch():
+    return 'hi'
     payload = getattr(request, "token_payload", {}) or {}
     student_id = payload.get("student_id")
     data = request.get_json(silent=True) or {}
@@ -396,3 +397,156 @@ def route_fullscreen_violation():
         "total_marks": attempt.total_marks,
     }
     return response(True, "fullscreen violation recorded and attempt submitted", out), 200
+
+
+@student_test_bp.route("/test/instructions/<test_id>", methods=["GET"])
+@token_required
+def get_test_instructions(test_id):
+    """
+    GET /api/students/test/instructions/<test_id>
+    Returns a list of instruction items:
+      1) General (hardcoded rich text HTML)
+      2) Test-level instruction (includes number of sections)
+      3) Section-wise instructions:
+         - a top-level note describing timer/navigation rules
+         - a list of sections, each with { name, instruction } (only include instruction if present)
+    Access is allowed only if:
+      - the student (from token) is assigned the test, and
+      - the test is currently ongoing (start_datetime <= now <= end_datetime)
+    """
+    payload = getattr(request, "token_payload", {}) or {}
+    student_id = payload.get("student_id")
+    if not student_id:
+        return response(False, "token missing student_id"), 401
+
+    # Normalize test id: try ObjectId then string fallback
+    from bson import ObjectId
+    search_id = None
+    try:
+        search_id = ObjectId(str(test_id))
+    except Exception:
+        search_id = str(test_id)
+
+    # Check assignment
+    try:
+        assigned = StudentTestAttempt.objects(
+            student_id=str(student_id),
+            test_id__in=[search_id, str(search_id)]
+        ).first()
+    except Exception as e:
+        current_app.logger.exception("Error checking StudentTestAttempt (instructions): %s", e)
+        return response(False, "error verifying assignment"), 500
+
+    is_assigned = bool(assigned)
+
+    # Fetch Test document
+    try:
+        try:
+            test_doc = Test.objects.get(id=search_id)
+        except (DoesNotExist, Exception):
+            test_doc = Test.objects.get(id=str(test_id))
+    except DoesNotExist:
+        return response(False, "test not found"), 404
+    except Exception as e:
+        current_app.logger.exception("Error fetching test (instructions): %s", e)
+        return response(False, "error fetching test"), 500
+
+    now = datetime.utcnow()
+    start = getattr(test_doc, "start_datetime", None)
+    end = getattr(test_doc, "end_datetime", None)
+
+    # Check ongoing
+    is_ongoing = False
+    if start and end:
+        is_ongoing = (start <= now) and (now <= end)
+
+    # Deny if not assigned or not ongoing
+    if not is_assigned or not is_ongoing:
+        details = {
+            "is_student_assigned": is_assigned,
+            "is_test_ongoing": is_ongoing,
+            "test_start_time": start.isoformat() if start else None,
+        }
+        return response(False, "access to test instructions denied", details), 403
+
+    # Build instruction items
+    try:
+        # 1) General hardcoded rich-text instruction (HTML allowed)
+        general_instruction_html = """
+        <h2>Important — General Exam Rules</h2>
+        <ul>
+          <li>Ensure you are taking this exam in a quiet, well-lit place with a stable internet connection.</li>
+          <li>Do not open additional tabs/windows or use screen-sharing tools during the test. Excessive tab switches
+              may lead to autosave and auto-submission according to the proctoring policy.</li>
+          <li>Keep your browser and device battery charged. The platform does not guarantee recovery from client-side
+              connectivity loss beyond periodic autosaves.</li>
+          <li>Do not attempt to access other applications or copy/paste questions. Malpractice may result in disqualification.</li>
+        </ul>
+        """
+
+        # 2) Test-level instruction (include number of sections)
+        num_time_restricted = len(getattr(test_doc, "sections_time_restricted", []) or [])
+        num_open = len(getattr(test_doc, "sections_open", []) or [])
+        total_sections = num_time_restricted + num_open
+
+        test_instruction = (
+            f"This test contains {total_sections} section(s): "
+            f"{num_time_restricted} time-restricted and {num_open} open. "
+            "Please allocate your time accordingly and follow section-level instructions."
+        )
+
+        # 3) Section-wise instruction block
+        # Top-level timing/navigation note:
+        section_top_note = (
+            "Time-restricted sections must be completed within their allotted time. "
+            "While inside a time-restricted section you cannot navigate to other sections unless you finish/submit "
+            "that section. Open sections are free to navigate between — you may move from one open section to another "
+            "without finishing them. Follow each section's specific instructions below."
+        )
+
+        # Build list of sections (name + instruction when present)
+        def _extract_section_entries(section_refs):
+            out = []
+            for s in (section_refs or []):
+                try:
+                    if not s:
+                        continue
+                    name = getattr(s, "name", None) or "Untitled section"
+                    instr = getattr(s, "instructions", None)
+                    # include instruction only if present and non-empty string
+                    entry = {"name": name}
+                    if instr and str(instr).strip():
+                        entry["instruction"] = instr
+                    out.append(entry)
+                except Exception:
+                    # skip problematic section but keep processing others
+                    current_app.logger.exception("Error reading section for instructions: %s", getattr(s, "id", None))
+                    continue
+            return out
+
+        sections_list = _extract_section_entries(getattr(test_doc, "sections_time_restricted", [])) + \
+                        _extract_section_entries(getattr(test_doc, "sections_open", []))
+
+        section_wise_instruction = {
+            "note": section_top_note,
+            "sections": sections_list
+        }
+
+        instructions = [
+            {"type": "general", "content": general_instruction_html, "format": "html"},
+            {"type": "test", "content": test_instruction, "format": "text", "total_sections": total_sections},
+            {"type": "sections", "content": section_wise_instruction, "format": "json"},
+        ]
+
+    except Exception as e:
+        current_app.logger.exception("Error building instructions payload: %s", e)
+        return response(False, "error building instructions"), 500
+
+    payload_out = {
+        "test_assignment_id": str(assigned.id) if assigned else None,
+        "is_student_assigned": True,
+        "test_start_time": start.isoformat() if start else None,
+        "instructions": instructions,
+    }
+
+    return response(True, "instructions fetched", payload_out), 200

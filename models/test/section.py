@@ -75,13 +75,8 @@ class Section(Document):
         - deterministic_shuffle=True makes shuffles reproducible using section.id as seed.
         """
         # prepare deterministic RNG seeded from section id (if requested)
-        if deterministic_shuffle and getattr(self, "id", None) is not None:
-            # use sha256(self.id) as seed (stable across processes)
-            seed_bytes = hashlib.sha256(str(self.id).encode("utf-8")).digest()
-            seed = int.from_bytes(seed_bytes[:8], "big")
-            rng = random.Random(seed)
-        else:
-            rng = random.Random()
+        
+        rng = random.Random()
 
         result = {
             "id": str(self.id),
