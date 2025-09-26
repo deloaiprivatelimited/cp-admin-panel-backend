@@ -12,6 +12,122 @@ from models.test.students_test_attempt import StudentTestAttempt
 
 from mongoengine.queryset.visitor import Q
 
+
+# near top of file where other imports are present
+from models.questions.coding import Submission  # adjust path to your actual Submission model import
+from bson import ObjectId
+
+def _choose_best_submission_id_from_value(value):
+    print(value)
+    """
+    If value is a list/iterable of submission ids (strings/ObjectIds),
+    pick the submission id with the maximum score.
+    Returns (best_submission_id_or_none, selected_summary_or_none)
+    """
+    try:
+        # Accept either a single id or a list of ids in value
+        if not value:
+            return None, None
+
+        # If value is already a string/oid, return it as-is
+        if isinstance(value, (str, ObjectId)):
+            return str(value), None
+
+        # If value is a dict that stores ids under some key (defensive)
+        if isinstance(value, dict) and "submission_ids" in value:
+            ids = value.get("submission_ids") or []
+        elif isinstance(value, dict) and "ids" in value:
+            ids = value.get("ids") or []
+        elif isinstance(value, (list, tuple)):
+            ids = list(value)
+        else:
+            # unknown shape: do nothing
+            return None, None
+
+        # normalize and filter valid-looking ids
+        normalized_ids = []
+        for x in ids:
+            if not x:
+                continue
+            try:
+                normalized_ids.append(str(x))
+            except Exception:
+                continue
+
+        if not normalized_ids:
+            return None, None
+
+        # Fetch submissions in one DB hit
+        subs_qs = Submission.objects(id__in=normalized_ids).only(
+            "id", "total_score", "case_results", "verdict", "created_at","source_code","language"
+        )
+        print(subs_qs)
+
+        # If none found, return None
+        subs = list(subs_qs)
+        if not subs:
+            return None, None
+
+        # Compute a numeric score for each submission:
+        # Prefer total_score if > 0, otherwise sum case_results.points_awarded
+        def submission_effective_score(s):
+            try:
+                # prefer numeric total_score
+                if getattr(s, "total_score", None) is not None:
+                    try:
+                        return int(getattr(s, "total_score") or 0)
+                    except Exception:
+                        pass
+                # fallback: sum case_results.points_awarded
+                crs = getattr(s, "case_results", []) or []
+                total = 0
+                for cr in crs:
+                    try:
+                        total += int(getattr(cr, "points_awarded", 0) or 0)
+                    except Exception:
+                        continue
+                return total
+            except Exception:
+                return 0
+
+        # choose best: highest effective score, tie-breaker latest created_at
+        best = None
+        best_score = None
+        for s in subs:
+            score = submission_effective_score(s)
+            if best is None or score > best_score:
+                best, best_score = s, score
+            elif score == best_score:
+                # tie-breaker: newest updated/created
+                try:
+                    if getattr(s, "created_at", None) and getattr(best, "created_at", None):
+                        if s.created_at > best.created_at:
+                            best = s
+                except Exception:
+                    pass
+
+        if not best:
+            return None, None
+
+        # Build a small summary for frontend (optional but helpful)
+        selected_summary = {
+            "submission_id": str(best.id),
+            "score": best_score,
+            "total_score_field": getattr(best, "total_score", None),
+            "verdict": getattr(best, "verdict", None),
+            "created_at": getattr(best, "created_at", None),
+            "source_code" : getattr(best,"source_code",None),
+            "language" : getattr(best,"language",None)
+        }
+
+        return str(best.id), selected_summary
+
+    except Exception as e:
+        # Don't let this break the whole response; log and move on
+        current_app.logger.exception("error choosing best submission: %s", e)
+        return None, None
+
+
 def token_required(f):
     """Decorator to protect routes using Authorization: Bearer <token>"""
     from functools import wraps
@@ -48,7 +164,6 @@ def list_student_results_for_test():
     from models.student import Student
 
     test_id = (request.args.get("test_id") or "").strip()
-    print(test_id)
     if not test_id:
         return response(False, "test_id is required"), 400
 
@@ -64,7 +179,7 @@ def list_student_results_for_test():
     if sort_by not in allowed_sorts:
         sort_by = "submitted_at"
     order = (request.args.get("order") or "desc").strip().lower()
-    order_prefix = "-" if order == "desc" else "+"
+    order_prefix = "-" if order == "desc" else ""
 
     # Build base query: filter only by test_id
     query = Q(test_id=str(test_id))
@@ -78,23 +193,29 @@ def list_student_results_for_test():
             current_app.logger.exception("Error searching students: %s", e)
             return response(False, "error searching students"), 500
 
-        # if no students match search -> empty result set
         if not student_ids:
             return response(True, "results fetched", {"results": [], "total": 0, "limit": limit, "offset": offset}), 200
 
         query &= Q(student_id__in=student_ids)
 
-    # fetch attempts
+    # fetch attempts (materialize to list so we can iterate multiple times)
     try:
         total = StudentTestAttempt.objects(query).count()
-        attempts_qs = (
+        attempts_qs = list(
             StudentTestAttempt.objects(query)
             .order_by(f"{order_prefix}{sort_by}")
             .skip(max(offset, 0))
             .limit(max(limit, 1))
+            .only(
+    "id", "student_id", "test_id", "total_marks", "max_marks",
+    "submitted", "submitted_at", "last_autosave",
+    "tab_switches_count", "fullscreen_violated"
+)
+
         )
     except Exception as e:
         current_app.logger.exception("Error querying StudentTestAttempt: %s", e)
+        # print(e)
         return response(False, "error fetching results"), 500
 
     # fetch test meta (name + description)
@@ -120,77 +241,35 @@ def list_student_results_for_test():
                 student_map[str(s.id)] = {"id": str(s.id), "name": getattr(s, "name", ""), "email": getattr(s, "email", "")}
         except Exception as e:
             current_app.logger.exception("Error fetching students for attempts: %s", e)
-            # Continue — we can still return attempts without detailed student info
             student_map = {}
 
     results = []
-    # summary accumulators
+    # summary accumulators for tabs only
     total_tab_switches = 0
     max_tab_switches = 0
     attempts_with_nonzero_tab_switches = 0
-    total_violations = 0
-    attempts_with_violations = 0
+
+    # helper: extract tab switch count robustly
+    def _extract_tab_switch_count(a):
+        val = getattr(a, "tab_switches_count", None)
+        try:
+            return int(val) if val is not None else 0
+        except Exception:
+            return 0
 
     for a in attempts_qs:
         sid = str(getattr(a, "student_id", "") or "")
         student_info = student_map.get(sid, None)
 
-        # Best-effort extraction of full-screen / tab-switch / violations info (safe fallbacks)
-        full_screen = bool(getattr(a, "full_screen", None) or getattr(a, "is_fullscreen", None) or False)
+        # full-screen: prefer canonical field, then legacy names
+        full_screen = bool(
+            getattr(a, "fullscreen_violated", None)
+            or getattr(a, "full_screen", None)
+            or getattr(a, "is_fullscreen", None)
+            or False
+        )
 
-        # tab switch count: prefer integer field, else length of list-type fields if present
-        tab_switch_count = 0
-        ts_val = getattr(a, "tab_switch_count", None)
-        if ts_val is None:
-            # alternative candidate names
-            ts_list = getattr(a, "tab_switches", None) or getattr(a, "tab_focus_events", None)
-            if ts_list is None:
-                ts_list = getattr(a, "tabs", None)  # fallback
-            if isinstance(ts_list, (list, tuple)):
-                tab_switch_count = len(ts_list)
-            else:
-                # try numeric fallback
-                try:
-                    tab_switch_count = int(getattr(a, "tab_switches_count", 0) or 0)
-                except Exception:
-                    tab_switch_count = 0
-        else:
-            try:
-                tab_switch_count = int(ts_val or 0)
-            except Exception:
-                tab_switch_count = 0
-
-        # violations: try multiple shapes
-        violations_field = getattr(a, "violations", None)
-        violation_count = 0
-        violations_list = []
-        if violations_field is None:
-            # try alternate fields
-            v_count = getattr(a, "violation_count", None) or getattr(a, "violations_count", None)
-            if v_count:
-                try:
-                    violation_count = int(v_count)
-                except Exception:
-                    violation_count = 0
-            else:
-                # maybe a boolean flag
-                if getattr(a, "cheating_detected", False):
-                    violation_count = 1
-                    violations_list = [{"type": "cheating_detected"}]
-        else:
-            # if it's a number
-            if isinstance(violations_field, (int, float)):
-                violation_count = int(violations_field)
-            # if it's a list/seq then length
-            elif isinstance(violations_field, (list, tuple)):
-                violation_count = len(violations_field)
-                violations_list = list(violations_field)
-            # if some other structure, try to read .count or .get
-            else:
-                try:
-                    violation_count = int(getattr(violations_field, "count", 0) or 0)
-                except Exception:
-                    violation_count = 0
+        tab_switch_count = _extract_tab_switch_count(a)
 
         # update summary accumulators
         total_tab_switches += tab_switch_count
@@ -198,10 +277,6 @@ def list_student_results_for_test():
             max_tab_switches = tab_switch_count
         if tab_switch_count > 0:
             attempts_with_nonzero_tab_switches += 1
-
-        total_violations += violation_count
-        if violation_count > 0:
-            attempts_with_violations += 1
 
         results.append({
             "id": str(getattr(a, "id", "")),
@@ -216,26 +291,18 @@ def list_student_results_for_test():
             "submitted_at": getattr(a, "submitted_at", None),
             "last_autosave": getattr(a, "last_autosave", None),
 
-            # UI / session telemetry (best-effort)
+            # UI / session telemetry (only full-screen + tabs)
             "full_screen": full_screen,
             "tab_switch_count": tab_switch_count,
-            "violations": violations_list,
-            "violation_count": violation_count,
         })
 
-    # Build summary objects for tabs + violations so frontend can display tabs with counts
+    # Build summary object for tabs so frontend can display tab metrics
     tabs_summary = {
         "total_tab_switches": total_tab_switches,
         "avg_tab_switches_per_attempt": (total_tab_switches / len(results)) if results else 0,
         "max_tab_switches": max_tab_switches,
         "attempts_with_tab_switches": attempts_with_nonzero_tab_switches,
         "attempts_with_tab_switches_percent": (attempts_with_nonzero_tab_switches / len(results) * 100) if results else 0,
-    }
-
-    violation_summary = {
-        "total_violations": total_violations,
-        "attempts_with_violations": attempts_with_violations,
-        "attempts_with_violations_percent": (attempts_with_violations / len(results) * 100) if results else 0,
     }
 
     return response(
@@ -248,9 +315,10 @@ def list_student_results_for_test():
             "limit": limit,
             "offset": offset,
             "tabs_summary": tabs_summary,
-            "violation_summary": violation_summary,
+            # violations intentionally removed as requested
         },
     ), 200
+
 
 @faculty_test_result_bp.route("/<student_id>/results", methods=["GET"])
 @token_required
@@ -262,7 +330,6 @@ def get_results_by_student_for_test(student_id):
     - include_snapshots: whether to include section snapshots and question snapshots (defaults to true).
     """
     test_id = (request.args.get("test_id") or "").strip()
-    print(test_id)
     if not test_id:
         return response(False, "test_id is required"), 400
 
@@ -367,7 +434,23 @@ def get_results_by_student_for_test(student_id):
             "value": getattr(ans, "value", None),
             "marks_obtained": None if getattr(ans, "marks_obtained", None) is None else float(ans.marks_obtained),
         }
-        # include snapshots only when requested
+        try:
+            qtype = (getattr(ans, "question_type", None) or "").lower()
+            # print(qtype)
+            if qtype in ("coding", "code", "coding_question"):
+                raw_value = getattr(ans, "value", None)
+                print('s',raw_value["value"])
+                best_id, selected_summary = _choose_best_submission_id_from_value(raw_value["value"])
+                # print(best_id,selected_summary)
+                if best_id:
+                    base["value"] = selected_summary
+                    # optionally include a selected_submission summary for UI convenience
+                    base["selected_submission"] = selected_summary
+                else:
+                    # fallback: leave value as-is (may be None or list)
+                    base["value"] = raw_value
+        except Exception as e:
+            current_app.logger.exception("error resolving coding submission ids: %s", e)        # include snapshots only when requested
         if include_snapshots:
             if getattr(ans, "snapshot_mcq", None):
                 base["snapshot_mcq"] = _mcq_snapshot_to_dict(ans.snapshot_mcq)
@@ -388,12 +471,10 @@ def get_results_by_student_for_test(student_id):
         }
 
     results = []
-    # summary accumulators
+    # summary accumulators for tabs only
     total_tab_switches = 0
     max_tab_switches = 0
     attempts_with_nonzero_tab_switches = 0
-    total_violations = 0
-    attempts_with_violations = 0
 
     for a in attempts_qs:
         item = {
@@ -408,9 +489,8 @@ def get_results_by_student_for_test(student_id):
             "submitted_at": getattr(a, "submitted_at", None),
             "last_autosave": getattr(a, "last_autosave", None),
         }
-        print(item['max_marks'])
 
-        # Best-effort extraction of full-screen / tab-switch / violations info (safe fallbacks)
+        # Best-effort extraction of full-screen / tab-switch info (safe fallbacks)
         full_screen = bool(getattr(a, "full_screen", None) or getattr(a, "is_fullscreen", None) or False)
 
         tab_switch_count = 0
@@ -432,32 +512,6 @@ def get_results_by_student_for_test(student_id):
             except Exception:
                 tab_switch_count = 0
 
-        violations_field = getattr(a, "violations", None)
-        violation_count = 0
-        violations_list = []
-        if violations_field is None:
-            v_count = getattr(a, "violation_count", None) or getattr(a, "violations_count", None)
-            if v_count:
-                try:
-                    violation_count = int(v_count)
-                except Exception:
-                    violation_count = 0
-            else:
-                if getattr(a, "cheating_detected", False):
-                    violation_count = 1
-                    violations_list = [{"type": "cheating_detected"}]
-        else:
-            if isinstance(violations_field, (int, float)):
-                violation_count = int(violations_field)
-            elif isinstance(violations_field, (list, tuple)):
-                violation_count = len(violations_field)
-                violations_list = list(violations_field)
-            else:
-                try:
-                    violation_count = int(getattr(violations_field, "count", 0) or 0)
-                except Exception:
-                    violation_count = 0
-
         # include snapshots when requested
         if include_snapshots:
             try:
@@ -473,11 +527,9 @@ def get_results_by_student_for_test(student_id):
                 item["timed_section_answers"] = []
                 item["open_section_answers"] = []
 
-        # attach ui/telemetry fields
+        # attach ui/telemetry fields (violations intentionally omitted)
         item["full_screen"] = full_screen
         item["tab_switch_count"] = tab_switch_count
-        item["violations"] = violations_list
-        item["violation_count"] = violation_count
 
         # update summary accumulators
         total_tab_switches += tab_switch_count
@@ -485,10 +537,6 @@ def get_results_by_student_for_test(student_id):
             max_tab_switches = tab_switch_count
         if tab_switch_count > 0:
             attempts_with_nonzero_tab_switches += 1
-
-        total_violations += violation_count
-        if violation_count > 0:
-            attempts_with_violations += 1
 
         results.append(item)
 
@@ -500,12 +548,6 @@ def get_results_by_student_for_test(student_id):
         "attempts_with_tab_switches_percent": (attempts_with_nonzero_tab_switches / len(results) * 100) if results else 0,
     }
 
-    violation_summary = {
-        "total_violations": total_violations,
-        "attempts_with_violations": attempts_with_violations,
-        "attempts_with_violations_percent": (attempts_with_violations / len(results) * 100) if results else 0,
-    }
-
     return response(True, "student results fetched", {
         "student": {"id": str(student.id), "name": getattr(student, "name", None), "email": getattr(student, "email", None)},
         "test_id": str(test_id),
@@ -513,6 +555,5 @@ def get_results_by_student_for_test(student_id):
         "total": total,
         "limit": limit,
         "offset": offset,
-        "tabs_summary": tabs_summary,
-        "violation_summary": violation_summary
+        "tabs_summary": tabs_summary
     }), 200

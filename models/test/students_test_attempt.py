@@ -574,7 +574,25 @@ class StudentTestAttempt(Document):
                             marks_obtained=None,
                         )
                         sec_ans.answers.append(ans)
+            try:
+                sec_max = 0.0
+                sec_total = 0.0
+                for a in (sec_ans.answers or []):
+                    if a.snapshot_mcq:
+                        sec_max += float(getattr(a.snapshot_mcq, "marks", 0.0) or 0.0)
+                    elif a.snapshot_coding:
+                        sec_max += float(getattr(a.snapshot_coding, "marks", 0.0) or 0.0)
+                    elif a.snapshot_rearrange:
+                        sec_max += float(getattr(a.snapshot_rearrange, "marks", 0.0) or 0.0)
 
+                    if a.marks_obtained is not None:
+                        sec_total += float(a.marks_obtained or 0.0)
+
+                sec_ans.section_max_marks = float(sec_max)
+                sec_ans.section_total_marks = float(sec_total)
+            except Exception:
+                # be safe: don't crash autosave on aggregation error
+                pass
         # finished processing payload -> update timestamp and persist
         self.last_autosave = datetime.utcnow()
         self.total_marks = self.total_marks_obtained()
