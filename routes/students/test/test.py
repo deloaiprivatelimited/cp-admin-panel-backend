@@ -262,7 +262,6 @@ def submit_test():
 @student_test_bp.route("/test/tab-switch", methods=["POST"])
 @token_required
 def route_tab_switch():
-    return 'hi'
     payload = getattr(request, "token_payload", {}) or {}
     student_id = payload.get("student_id")
     data = request.get_json(silent=True) or {}
