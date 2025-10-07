@@ -2,7 +2,7 @@ import os, secrets, string
 from flask import Blueprint, request, jsonify, current_app
 from models.student import Student
 from mongoengine.errors import NotUniqueError, ValidationError, FieldDoesNotExist
-from tasks.mail_tasks import send_mail
+# from tasks.mail_tasks import send_mail
 from utils.response import response
 from utils.jwt import create_access_token, verify_access_token
 from models.college import College
@@ -131,23 +131,23 @@ def add_bulk_students():
 
             # send email (Celery style if available)
             subject, html, text = build_email(student, plain_password)
-            try:
-                # prefer async task if present
-                if hasattr(send_mail, "delay"):
-                    send_mail.delay(to=[student.email], subject=subject, html=html, text=text)
-                else:
-                    send_mail(to=[student.email], subject=subject, html=html, text=text)
-            except Exception as mail_exc:
-                # email failure should not mark student creation as failed
-                results.append({
-                    "index": idx,
-                    "status": "created_email_failed",
-                    "message": f"Student created but email sending failed: {str(mail_exc)}",
-                    "student_id": str(student.id),
-                    "email": student.email
-                })
-                created_count += 1
-                continue
+            # try:
+                # # prefer async task if present
+                # if hasattr(send_mail, "delay"):
+                #     send_mail.delay(to=[student.email], subject=subject, html=html, text=text)
+                # else:
+                #     send_mail(to=[student.email], subject=subject, html=html, text=text)
+            # except Exception as mail_exc:
+            #     # email failure should not mark student creation as failed
+            #     results.append({
+            #         "index": idx,
+            #         "status": "created_email_failed",
+            #         "message": f"Student created but email sending failed: {str(mail_exc)}",
+            #         "student_id": str(student.id),
+            #         "email": student.email
+            #     })
+            #     created_count += 1
+            #     continue
 
             results.append({
                 "index": idx,

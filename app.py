@@ -43,13 +43,16 @@ from routes.faculty_admin.questions_test.mcq import mcq_bp as test_edit_mcq
 from routes.faculty_admin.v1.questions.coding import coding_bp as generic_coding_bp
 from routes.faculty_admin.v1.questions.rearrange import rearrange_bp as generic_rearrange_bp
 from routes.faculty_admin.v1.questions.mcq import generic_bp as generic_mcq_bp
-
+from routes.faculty_admin.student_profile_form.students_placement_profile import students_placement_profile as faculty_student_profile_form_bp
 from routes.faculty_admin.test.attempt_test import assign_bp as test_assign_bp
 from routes.faculty_admin.test.test_result import faculty_test_result_bp
 from routes.students.student_basic import student_bp as student_basic_bp
 from routes.students.test.test import student_test_bp 
 # Load environment variables
 load_dotenv()
+# add near the top, after load_dotenv()
+CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
+CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://localhost:6379/1")
 
 def create_app():
     app = Flask(__name__)
@@ -57,6 +60,9 @@ def create_app():
     # Flask config
     CORS(app, resources={r"/*": {"origins": "*"}})
     app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "fallback-secret")
+     # ✅ Celery config so the worker and app share settings
+    app.config["CELERY_BROKER_URL"] = CELERY_BROKER_URL
+    app.config["CELERY_RESULT_BACKEND"] = CELERY_RESULT_BACKEND
 
     # Connect to MongoDB Atlas
     connect(host=os.getenv("MONGO_URI"))
@@ -75,7 +81,7 @@ def create_app():
     app.register_blueprint(coding_bp,url_prefix="/coding/questions")
     app.register_blueprint(test_assign_bp)
     app.register_blueprint(faculty_test_result_bp)
-
+    app.register_blueprint(faculty_student_profile_form_bp,url_prefix="/faculty/student/profile/form")
 
     
     app.register_blueprint(collegeadmin_bp)
