@@ -74,6 +74,7 @@ class StudentsPlacementProfile(Document):
     college = ReferenceField(College, required=True)  # reference to the College owning this form
     sections = ListField(EmbeddedDocumentField(Section))
     settings = DictField()  # e.g., {"allowMultipleSubmissions": True, "confirmationMessage": "..."}
+    form_open = BooleanField(default = False)
     created_at = DateTimeField(default=datetime.utcnow)
     updated_at = DateTimeField(default=datetime.utcnow)
 

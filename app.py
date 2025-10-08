@@ -48,6 +48,8 @@ from routes.faculty_admin.test.attempt_test import assign_bp as test_assign_bp
 from routes.faculty_admin.test.test_result import faculty_test_result_bp
 from routes.students.student_basic import student_bp as student_basic_bp
 from routes.students.test.test import student_test_bp 
+from routes.students.students_placement_submission import students_placement_submission
+
 # Load environment variables
 load_dotenv()
 # add near the top, after load_dotenv()
@@ -82,6 +84,7 @@ def create_app():
     app.register_blueprint(test_assign_bp)
     app.register_blueprint(faculty_test_result_bp)
     app.register_blueprint(faculty_student_profile_form_bp,url_prefix="/faculty/student/profile/form")
+    app.register_blueprint(students_placement_submission,url_prefix="/student/profile/form")
 
     
     app.register_blueprint(collegeadmin_bp)

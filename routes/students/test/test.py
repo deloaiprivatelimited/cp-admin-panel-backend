@@ -23,6 +23,9 @@ def token_required(f):
         try:
             payload = verify_access_token(token)
         except ValueError as e:
+            print(token)
+            print(e)
+            print('token error')
             return response(False, str(e)), 401
 
         # attach payload to request context for handler use

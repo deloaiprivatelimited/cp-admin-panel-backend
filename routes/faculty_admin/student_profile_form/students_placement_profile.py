@@ -38,7 +38,7 @@ def token_required(f):
             return response(False, str(e)), 401
 
         # attach payload to request context for handler use
-        print(payload)
+        # print(payload)
         request.token_payload = payload
         return f(*args, **kwargs)
 
@@ -134,13 +134,13 @@ def create_or_get_form():
         current_app.logger.exception("Form validation failed")
         return response(False, str(e)), 400
  # If this was an update (not new), sync all submissions for this form
-    if not created:
-        try:
-            from tasks import sync_form_submissions_task
-            task = sync_form_submissions_task.delay(str(form.id))
-            current_app.logger.info(f"Dispatched sync task {task.id} for form {form.id}")
-        except Exception:
-            current_app.logger.exception("Failed to dispatch sync task after form update")
+    # if not created:
+    #     try:
+    #         from tasks import sync_form_submissions_task
+    #         task = sync_form_submissions_task.delay(str(form.id))
+    #         current_app.logger.info(f"Dispatched sync task {task.id} for form {form.id}")
+    #     except Exception:
+    #         current_app.logger.exception("Failed to dispatch sync task after form update")
 
 
     if created:
@@ -207,8 +207,39 @@ def get_form():
             for sec in form.sections or []
         ],
         "settings": form.settings or {},
+            "open": bool(getattr(form, "form_open", False)),   # <-- ADDED: current open state
+
         "updated_at": form.updated_at.isoformat() if form.updated_at else None,
         "created_at": form.created_at.isoformat() if form.created_at else None,
     }
 
     return response(True, "Form fetched successfully", data=form_data), 200
+
+
+@students_placement_profile.route("/forms/toggle_open", methods=["PATCH"])
+@token_required
+def toggle_open_form():
+    """Toggle the 'open' status of the placement form for the logged-in college."""
+    token_payload = getattr(request, "token_payload", {})
+    college_id = token_payload.get("college_id")
+
+    if not college_id:
+        return response(False, "`college_id` is required"), 400
+
+    try:
+        college = College.objects.get(id=college_id)
+    except (DoesNotExist, ValidationError):
+        return response(False, "College not found"), 404
+
+    try:
+        form = StudentsPlacementProfile.objects.get(college=college)
+    except DoesNotExist:
+        return response(False, "Form not found for this college"), 404
+
+    # Toggle the open status
+    form.form_open = not form.form_open
+    form.updated_at = datetime.utcnow()
+    form.save()
+
+    status = "opened" if form.form_open else "closed"
+    return response(True, f"Form {status} successfully", data={"open": form.form_open}), 200
